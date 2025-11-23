@@ -1,0 +1,95 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+This is a custom statusline for Claude Code that displays:
+- Model name
+- Current directory
+- Git branch and status (clean, modified, staged, untracked)
+- Token usage "fuel gauge" showing remaining context before autocompact
+
+Example output: `🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓ | ⛽ 36% (57K)`
+
+## Architecture
+
+The project consists of two main components:
+
+1. **bin/statusline.sh** - The core statusline script that:
+   - Receives JSON input from Claude Code via stdin
+   - Extracts model name, workspace directory, and transcript path using `jq`
+   - Checks git status using `git` commands with `gc.autodetach=false` config
+   - Parses the transcript JSONL file to calculate token usage
+   - Reads `~/.claude/settings.json` to check autocompact settings
+   - Outputs formatted status with ANSI color codes
+
+2. **install-statusline.sh** - Installation script that:
+   - Validates dependencies (jq)
+   - Creates backups in `~/.local/share/byj-cc-statusline/backups/`
+   - Copies statusline.sh to `~/.claude/`
+   - Updates `~/.claude/settings.json` with statusLine configuration
+
+## Key Technical Details
+
+### Token Usage Calculation
+- Default budget: 200K tokens total
+- Autocompact buffer: 45K tokens (22.5%)
+- Safe limit: 155K tokens
+- Fuel percentage = remaining tokens / safe limit × 100
+- Reads autocompact setting from `~/.claude/settings.json` (defaults to true)
+- Parses last 100 lines of transcript JSONL for latest usage data
+- Combines: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`
+
+### Git Status Detection
+Uses `git -c gc.autodetach=false` to prevent git garbage collection during status checks:
+- Red dot (🔴): Modified files (`git diff --quiet`)
+- Green dot (🟢): Staged files (`git diff --cached --quiet`)
+- Yellow dot (🟡): Untracked files (`git ls-files --others --exclude-standard`)
+- Green checkmark (✓): Clean working tree
+
+### Color Coding
+- Fuel gauge colors: Green (≥70%), Yellow (30-70%), Red (<30%)
+- Warning icon (⚠️) appears when fuel < 30%
+- All colors use ANSI escape codes (e.g., `\033[32m` for green)
+
+## Testing
+
+To test the statusline locally without installing:
+
+```bash
+# Create sample JSON input (adjust paths to match your system)
+cat > /tmp/test-input.json << 'EOF'
+{
+  "model": {"display_name": "Sonnet 4.5"},
+  "workspace": {"current_dir": "/path/to/test"},
+  "transcript_path": "/path/to/transcript.jsonl"
+}
+EOF
+
+# Test the script
+cat /tmp/test-input.json | bash bin/statusline.sh
+```
+
+## Installation
+
+```bash
+# Standard installation
+bash install-statusline.sh
+
+# Verify installation
+ls -la ~/.claude/statusline.sh
+cat ~/.claude/settings.json | jq '.statusLine'
+```
+
+## Dependencies
+
+- **jq** - Required for JSON parsing
+- **git** - Optional, for git status display
+- **bash** - Shell interpreter
+
+## File Locations
+
+- Script: `~/.claude/statusline.sh`
+- Settings: `~/.claude/settings.json`
+- Backups: `~/.local/share/byj-cc-statusline/backups/YYYYMMDD_HHMMSS/`
