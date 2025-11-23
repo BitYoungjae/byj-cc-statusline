@@ -8,9 +8,7 @@
 
 A curated statusline for Claude Code (CC) - showing only the essentials. Displays context usage like a car's fuel gauge, helping you track how close you are to the autocompact threshold.
 
-```
-🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓ | ⛽ 36% (57K)
-```
+![Statusline Preview](capture.png)
 
 ## 📖 What Each Part Shows
 
@@ -34,12 +32,12 @@ Current working directory name (not full path, just the folder name).
 
 Git branch name with status indicators:
 
-| Symbol | Meaning                   | Example            |
-| ------ | ------------------------- | ------------------ |
-| ✓      | Clean - no changes        | `🌿 main ✓`        |
-| 🔴     | Modified files (unstaged) | `🌿 main 🔴`       |
-| 🟢     | Staged files              | `🌿 main 🟢`       |
-| 🟡     | Untracked files           | `🌿 main 🟡`       |
+| Symbol | Meaning                   | Example      |
+| ------ | ------------------------- | ------------ |
+| ✓      | Clean - no changes        | `🌿 main ✓`  |
+| 🔴     | Modified files (unstaged) | `🌿 main 🔴` |
+| 🟢     | Staged files              | `🌿 main 🟢` |
+| 🟡     | Untracked files           | `🌿 main 🟡` |
 
 Symbols can combine: `🌿 main 🔴🟢` = modified + staged files
 
@@ -157,10 +155,12 @@ byj-cc-statusline/
 ## 🛠️ Troubleshooting
 
 **Statusline not working?**
+
 - Ensure jq is installed: `which jq`
 - Restart Claude Code
 
 **Fuel gauge shows nothing?**
+
 - Start a conversation first (requires usage data)
 
 ## 🔄 Updates
