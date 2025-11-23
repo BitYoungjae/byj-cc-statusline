@@ -62,7 +62,7 @@ if [ -f "$transcript" ] && command -v jq >/dev/null 2>&1; then
             TOTAL_BUDGET=200000           # 전체 컨텍스트 크기
 
             # autoCompactEnabled 설정 확인 (기본값: true)
-            SETTINGS_FILE="$HOME/.claude/settings.json"
+            SETTINGS_FILE="$HOME/.claude.json"
             if [ -f "$SETTINGS_FILE" ]; then
                 autocompact_enabled=$(jq -r 'if .autoCompactEnabled == null then true else .autoCompactEnabled end' "$SETTINGS_FILE" 2>/dev/null)
             else
