@@ -102,17 +102,24 @@ if [ -f "$STATUSLINE_PATH" ] || [ -f "$SETTINGS_PATH" ]; then
 fi
 
 # 4. Copy statusline.sh file
-# Find the directory where the script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE_STATUSLINE="$SCRIPT_DIR/bin/statusline.sh"
+# Check for STATUSLINE_SOURCE env var first (for remote install), then local path
+if [ -n "$STATUSLINE_SOURCE" ] && [ -f "$STATUSLINE_SOURCE" ]; then
+  SOURCE_STATUSLINE="$STATUSLINE_SOURCE"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  SOURCE_STATUSLINE="$SCRIPT_DIR/bin/statusline.sh"
+fi
 
-# Check if bin/statusline.sh exists
+# Check if source file exists
 if [ ! -f "$SOURCE_STATUSLINE" ]; then
   log_error "Source file not found: $SOURCE_STATUSLINE"
   echo ""
   echo "Installation methods:"
-  echo "  1. If cloned from repository: Run from the git clone directory"
-  echo "  2. If downloaded files only: bin/statusline.sh must be in the same directory"
+  echo "  1. Clone and run: git clone ... && bash install-statusline.sh"
+  echo "  2. Remote install (no clone):"
+  echo "     curl -fsSL https://raw.githubusercontent.com/bityoungjae/byj-cc-statusline/main/install-statusline.sh -o /tmp/install.sh && \\"
+  echo "     curl -fsSL https://raw.githubusercontent.com/bityoungjae/byj-cc-statusline/main/bin/statusline.sh -o /tmp/statusline.sh && \\"
+  echo "     STATUSLINE_SOURCE=/tmp/statusline.sh bash /tmp/install.sh"
   exit 1
 fi
 

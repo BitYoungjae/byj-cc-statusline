@@ -78,12 +78,12 @@ The installer will:
 - ✅ Copy `bin/statusline.sh` to `~/.claude/`
 - ✅ Update `~/.claude/settings.json`
 
-### Alternative: One-liner download and install
+### Alternative: Remote install (no clone required)
 
 ```bash
-curl -fsSL https://github.com/BitYoungjae/byj-cc-statusline/archive/main.tar.gz | tar -xz && \
-cd byj-cc-statusline-main && \
-bash install-statusline.sh
+curl -fsSL https://raw.githubusercontent.com/bityoungjae/byj-cc-statusline/main/install-statusline.sh -o /tmp/install.sh && \
+curl -fsSL https://raw.githubusercontent.com/bityoungjae/byj-cc-statusline/main/bin/statusline.sh -o /tmp/statusline.sh && \
+STATUSLINE_SOURCE=/tmp/statusline.sh bash /tmp/install.sh
 ```
 
 ### Manual install
