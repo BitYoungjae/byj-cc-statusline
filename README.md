@@ -8,6 +8,8 @@
 
 A curated statusline for Claude Code (CC) - showing only the essentials. Displays context usage like a car's fuel gauge, helping you track how close you are to the autocompact threshold.
 
+**Lightweight:** Single bash script (~120 lines), no external dependencies except `jq`.
+
 ![Statusline Preview](capture.png)
 
 ## 📖 What Each Part Shows
