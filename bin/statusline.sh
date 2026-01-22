@@ -64,11 +64,13 @@ if [ "$current_usage" -gt 0 ] 2>/dev/null; then
         autocompact_enabled=true
     fi
 
-    # Autocompact 버퍼 계산 (전체의 22.5%)
+    # Autocompact 버퍼 계산
+    # - Auto-compact ON: 22.5% (45K for 200K window)
+    # - Auto-compact OFF: 1.5% (3K for 200K window) - 최소 compact buffer
     if [ "$autocompact_enabled" = "true" ]; then
         autocompact_buffer=$((context_window_size * 225 / 1000))
     else
-        autocompact_buffer=0
+        autocompact_buffer=$((context_window_size * 15 / 1000))
     fi
 
     safe_limit=$((context_window_size - autocompact_buffer))

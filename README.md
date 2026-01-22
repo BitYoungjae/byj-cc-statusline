@@ -126,9 +126,14 @@ sudo yum install jq  # CentOS/RHEL
 
 ## ⚙️ How the Fuel Gauge Works
 
-Claude Code auto-compacts old messages when context exceeds **155K tokens** (200K total - 45K buffer). If you disable auto-compact via `/config`, the gauge uses the full 200K limit instead.
+Claude Code reserves buffer space for context management:
 
-**Calculation example:**
+| Auto-compact Setting | Buffer Size | Safe Limit |
+|---------------------|-------------|------------|
+| **ON** (default)    | 45K (22.5%) | 155K       |
+| **OFF**             | 3K (1.5%)   | 197K       |
+
+**Calculation example (auto-compact ON):**
 
 ```
 Total context:     200,000 tokens
@@ -140,7 +145,7 @@ Current usage:      97,830 tokens
 Remaining fuel:     57,170 tokens → ⛽ 36%
 ```
 
-The percentage shows how much safe space you have left before autocompact triggers.
+The percentage shows how much safe space you have left before hitting the buffer threshold.
 
 ## 📁 Project Structure
 
