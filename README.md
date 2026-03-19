@@ -6,9 +6,9 @@
 
 ## 📊 Overview
 
-A curated statusline for Claude Code (CC) - showing only the essentials. Displays context usage like a car's fuel gauge, helping you track how close you are to the autocompact threshold.
+A curated statusline for Claude Code (CC) - showing only the essentials. Displays context usage like a car's fuel gauge and API utilization at a glance.
 
-**Lightweight:** Single bash script (~100 lines), no external dependencies except `jq`.
+**Lightweight:** Single bash script, no external dependencies except `jq` and `curl`.
 
 ![Statusline Preview](capture.png)
 
@@ -32,16 +32,16 @@ Current working directory name (not full path, just the folder name).
 
 ### 🌿 Git Status
 
-Git branch name with status indicators:
+Git branch name with colored status indicators:
 
-| Symbol | Meaning                   | Example      |
-| ------ | ------------------------- | ------------ |
-| ✓      | Clean - no changes        | `🌿 main ✓`  |
-| 🔴     | Modified files (unstaged) | `🌿 main 🔴` |
-| 🟢     | Staged files              | `🌿 main 🟢` |
-| 🟡     | Untracked files           | `🌿 main 🟡` |
+| Symbol | Color  | Meaning                 | Example        |
+| ------ | ------ | ----------------------- | -------------- |
+| ●      | Red    | Modified files (unstaged)| `🌿 main ●`   |
+| ●      | Green  | Staged files            | `🌿 main ●`   |
+| ●      | Yellow | Untracked files         | `🌿 main ●`   |
+| ✓      | Green  | Clean - no changes      | `🌿 main ✓`   |
 
-Symbols can combine: `🌿 main 🔴🟢` = modified + staged files
+Symbols can combine: `🌿 main ●●` = modified + staged files
 
 ### ⛽ Fuel Gauge
 
@@ -56,12 +56,29 @@ Shows remaining safe context before autocompact triggers.
 
 - 🟢 Green (≥70%): Safe - plenty of space
 - 🟡 Yellow (30-70%): Caution - moderate usage
-- 🔴 Red (<30%): Warning - autocompact imminent
+- 🔴 Red (<30%): Warning - autocompact imminent (icon changes to ⚠️)
 
 **Example:** `⛽ 36% (57K)` means:
 
-- 36% of safe space left (out of 155K safe limit)
+- 36% of safe space left
 - 57,000 tokens remaining before autocompact
+
+### 📊 API Usage Gauge
+
+Shows Anthropic API utilization from the Usage API.
+
+**Format:** `📊 5h XX% · 7d XX%` where:
+
+- **5h XX%** = 5-hour session utilization
+- **7d XX%** = 7-day weekly utilization
+
+**Color coding:**
+
+- 🟢 Green (<50%): Low usage
+- 🟡 Yellow (50-80%): Moderate usage
+- 🔴 Red (≥80%): High usage
+
+**Caching:** API responses are cached for 180 seconds with rate-limit backoff support.
 
 ## 🚀 Installation
 
@@ -112,8 +129,9 @@ chmod +x ~/.claude/statusline.sh
 
 - **Claude Code** v2.0+
 - **jq** - JSON parser
+- **curl** - For API usage fetching
 
-Install jq:
+Install dependencies:
 
 ```bash
 # macOS
@@ -126,14 +144,18 @@ sudo yum install jq  # CentOS/RHEL
 
 ## ⚙️ How the Fuel Gauge Works
 
+The fuel gauge reads `context_window` data provided by Claude Code via stdin, including `context_window_size` and current token usage.
+
 Claude Code reserves buffer space for context management:
 
-| Auto-compact Setting | Buffer Size | Safe Limit |
-|---------------------|-------------|------------|
-| **ON** (default)    | 45K (22.5%) | 155K       |
-| **OFF**             | 3K (1.5%)   | 197K       |
+| Auto-compact Setting | Buffer Size | Safe Limit (200K example) |
+|---------------------|-------------|---------------------------|
+| **ON** (default)    | 22.5%       | 155K                      |
+| **OFF**             | 1.5%        | 197K                      |
 
-**Calculation example (auto-compact ON):**
+Autocompact setting is read from `~/.claude.json`.
+
+**Calculation example (auto-compact ON, 200K context):**
 
 ```
 Total context:     200,000 tokens
@@ -147,12 +169,23 @@ Remaining fuel:     57,170 tokens → ⛽ 36%
 
 The percentage shows how much safe space you have left before hitting the buffer threshold.
 
+## ⚙️ How the API Usage Gauge Works
+
+The API usage gauge fetches utilization data from the Anthropic Usage API:
+
+- **Endpoint:** `GET https://api.anthropic.com/api/oauth/usage`
+- **Auth:** OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
+- **Cache:** `~/.cache/byj-cc-statusline/usage.json` (180 second TTL)
+- **Rate limiting:** Respects `Retry-After` headers with 300 second default backoff
+- **Fallback:** Serves stale cache when API is unavailable or rate-limited
+
 ## 📁 Project Structure
 
 ```
 byj-cc-statusline/
 ├── README.md                  # This file
 ├── LICENSE                    # MIT License
+├── CLAUDE.md                  # Claude Code instructions
 ├── .gitignore                 # Git ignore rules
 ├── install-statusline.sh      # Automated installer
 └── bin/
@@ -169,6 +202,12 @@ byj-cc-statusline/
 **Fuel gauge shows nothing?**
 
 - Start a conversation first (requires usage data)
+
+**API usage not showing?**
+
+- Ensure you're logged in to Claude Code with OAuth
+- Check if `curl` is available: `which curl`
+- Cache is at `~/.cache/byj-cc-statusline/usage.json`
 
 ## 🔄 Updates
 
