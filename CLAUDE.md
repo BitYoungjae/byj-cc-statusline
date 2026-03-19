@@ -35,13 +35,13 @@ The project consists of two main components:
 ## Key Technical Details
 
 ### Token Usage Calculation
-- Default budget: 200K tokens total
-- Autocompact buffer: 45K tokens (22.5%)
-- Safe limit: 155K tokens
+- Context window size: read from stdin `context_window.context_window_size`
+- Autocompact buffer: 33K tokens (fixed, all models)
+- Safe limit: context_window_size - 33K
 - Fuel percentage = remaining tokens / safe limit × 100
-- Reads autocompact setting from `~/.claude/settings.json` (defaults to true)
-- Parses last 100 lines of transcript JSONL for latest usage data
-- Combines: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`
+- Reads autocompact setting from `~/.claude.json` (defaults to true)
+- When autocompact disabled: buffer = 3K tokens
+- Combines: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
 
 ### Git Status Detection
 Uses `git -c gc.autodetach=false` to prevent git garbage collection during status checks:

@@ -218,11 +218,11 @@ if [ "$current_usage" -gt 0 ] 2>/dev/null; then
         autocompact_enabled=true
     fi
 
-    # Autocompact 버퍼: ON=22.5%, OFF=1.5%
+    # Autocompact 버퍼: ON=33K 고정, OFF=3K 고정
     if [ "$autocompact_enabled" = "true" ]; then
-        autocompact_buffer=$((context_window_size * 225 / 1000))
+        autocompact_buffer=33000
     else
-        autocompact_buffer=$((context_window_size * 15 / 1000))
+        autocompact_buffer=3000
     fi
 
     safe_limit=$((context_window_size - autocompact_buffer))

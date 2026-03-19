@@ -150,10 +150,10 @@ The fuel gauge reads `context_window` data provided by Claude Code via stdin, in
 
 Claude Code reserves buffer space for context management:
 
-| Auto-compact Setting | Buffer Size | Safe Limit (200K example) |
-|---------------------|-------------|---------------------------|
-| **ON** (default)    | 22.5%       | 155K                      |
-| **OFF**             | 1.5%        | 197K                      |
+| Auto-compact Setting | Buffer Size | Safe Limit (200K) | Safe Limit (1M) |
+|---------------------|-------------|-------------------|-----------------|
+| **ON** (default)    | 33K (fixed) | 167K              | 967K            |
+| **OFF**             | 3K (fixed)  | 197K              | 997K            |
 
 Autocompact setting is read from `~/.claude.json`.
 
@@ -161,12 +161,12 @@ Autocompact setting is read from `~/.claude.json`.
 
 ```
 Total context:     200,000 tokens
-Autocompact buffer: 45,000 tokens (22.5%)
+Autocompact buffer: 33,000 tokens (fixed)
 ─────────────────────────────────────────
-Safe limit:        155,000 tokens
+Safe limit:        167,000 tokens
 
 Current usage:      97,830 tokens
-Remaining fuel:     57,170 tokens → ⛽ 36%
+Remaining fuel:     69,170 tokens → ⛽ 41%
 ```
 
 The percentage shows how much safe space you have left before hitting the buffer threshold.
