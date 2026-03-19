@@ -34,14 +34,16 @@ Current working directory name (not full path, just the folder name).
 
 Git branch name with colored status indicators:
 
-| Symbol | Color  | Meaning                 | Example        |
-| ------ | ------ | ----------------------- | -------------- |
-| ●      | Red    | Modified files (unstaged)| `🌿 main ●`   |
-| ●      | Green  | Staged files            | `🌿 main ●`   |
-| ●      | Yellow | Untracked files         | `🌿 main ●`   |
-| ✓      | Green  | Clean - no changes      | `🌿 main ✓`   |
+| Symbol | Meaning                 | Example          |
+| ------ | ----------------------- | ---------------- |
+| 🔴     | Modified files (unstaged)| `🌿 main 🔴`    |
+| 🟢     | Staged files            | `🌿 main 🟢`    |
+| 🟡     | Untracked files         | `🌿 main 🟡`    |
+| ✅     | Clean - no changes      | `🌿 main ✅`    |
 
-Symbols can combine: `🌿 main ●●` = modified + staged files
+Symbols can combine: `🌿 main 🔴🟢` = modified + staged files
+
+> **Note:** In the actual terminal, these are displayed as ANSI-colored dots (`●`) and checkmark (`✓`).
 
 ### ⛽ Fuel Gauge
 
