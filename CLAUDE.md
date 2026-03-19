@@ -9,8 +9,9 @@ This is a custom statusline for Claude Code that displays:
 - Current directory
 - Git branch and status (clean, modified, staged, untracked)
 - Token usage "fuel gauge" showing remaining context before autocompact
+- API usage gauge showing 5-hour session and 7-day weekly utilization
 
-Example output: `🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓ | ⛽ 36% (57K)`
+Example output: `🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓ | ⛽ 36% (57K) | 📊 5h 20% · 7d 45%`
 
 ## Architecture
 
@@ -22,6 +23,7 @@ The project consists of two main components:
    - Checks git status using `git` commands with `gc.autodetach=false` config
    - Parses the transcript JSONL file to calculate token usage
    - Reads `~/.claude/settings.json` to check autocompact settings
+   - Queries Anthropic Usage API for 5-hour/7-day utilization (with caching)
    - Outputs formatted status with ANSI color codes
 
 2. **install-statusline.sh** - Installation script that:
@@ -48,8 +50,18 @@ Uses `git -c gc.autodetach=false` to prevent git garbage collection during statu
 - Yellow dot (🟡): Untracked files (`git ls-files --others --exclude-standard`)
 - Green checkmark (✓): Clean working tree
 
+### API Usage (Anthropic Usage API)
+- Endpoint: `GET https://api.anthropic.com/api/oauth/usage`
+- Auth: OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
+- Required header: `anthropic-beta: oauth-2025-04-20`
+- Displays: 5-hour session utilization (`five_hour.utilization`) and 7-day weekly utilization (`seven_day.utilization`)
+- Cache: `~/.cache/byj-cc-statusline/usage.json` (180 second TTL)
+- Lock: `~/.cache/byj-cc-statusline/usage.lock` (30 second cooldown, 300 second rate-limit backoff)
+- Stale cache is served when API is unavailable or rate-limited
+
 ### Color Coding
 - Fuel gauge colors: Green (≥70%), Yellow (30-70%), Red (<30%)
+- Usage gauge colors: Green (<50%), Yellow (50-80%), Red (≥80%)
 - Warning icon (⚠️) appears when fuel < 30%
 - All colors use ANSI escape codes (e.g., `\033[32m` for green)
 
@@ -85,6 +97,7 @@ cat ~/.claude/settings.json | jq '.statusLine'
 ## Dependencies
 
 - **jq** - Required for JSON parsing
+- **curl** - Required for API usage fetching
 - **git** - Optional, for git status display
 - **bash** - Shell interpreter
 
@@ -93,3 +106,5 @@ cat ~/.claude/settings.json | jq '.statusLine'
 - Script: `~/.claude/statusline.sh`
 - Settings: `~/.claude/settings.json`
 - Backups: `~/.local/share/byj-cc-statusline/backups/YYYYMMDD_HHMMSS/`
+- Usage cache: `~/.cache/byj-cc-statusline/usage.json`
+- Usage lock: `~/.cache/byj-cc-statusline/usage.lock`
