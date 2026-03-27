@@ -11,7 +11,11 @@ This is a custom statusline for Claude Code that displays:
 - Token usage "fuel gauge" showing remaining context before autocompact
 - API usage gauge showing 5-hour session and 7-day weekly utilization
 
-Example output: `🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓ | ⛽ 36% (57K) | 📊 5h 20% · 7d 45%`
+Example output (two lines):
+```
+🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓
+⛽ 36% (57K) | 📊 5h 20% · 7d 45%
+```
 
 ## Architecture
 

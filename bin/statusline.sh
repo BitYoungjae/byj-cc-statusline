@@ -183,10 +183,13 @@ IFS=$'\t' read -r model cwd context_window_size input_tokens cache_creation cach
 dir=$(basename "$cwd")
 cd "$cwd" 2>/dev/null || cd ~
 
-# 출력 세그먼트를 배열로 수집
-segments=()
-segments+=("🤖 ${C_CYAN}${model}${C_RESET}")
-segments+=("📁 ${C_BLUE}${dir}${C_RESET}")
+# 출력 세그먼트를 두 줄로 수집
+# line1: 컨텍스트 (모델, 위치, git)
+# line2: 메트릭 (연료, API 사용량)
+line1_segments=()
+line2_segments=()
+line1_segments+=("🤖 ${C_CYAN}${model}${C_RESET}")
+line1_segments+=("📁 ${C_BLUE}${dir}${C_RESET}")
 
 # ── Git 상태 ──
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -203,7 +206,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
             st="${st}${C_YELLOW}●${C_RESET}"
         [ -z "$st" ] && st="${C_GREEN}✓${C_RESET}"
 
-        segments+=("🌿 ${C_MAGENTA}${br}${C_RESET} ${st}")
+        line1_segments+=("🌿 ${C_MAGENTA}${br}${C_RESET} ${st}")
     fi
 fi
 
@@ -249,7 +252,7 @@ if [ "$current_usage" -gt 0 ] 2>/dev/null; then
         fuel_display="$fuel_remaining"
     fi
 
-    segments+=("${fuel_icon} ${fuel_color}${fuel_pct}%${C_RESET} ${C_DIM}(${fuel_display})${C_RESET}")
+    line2_segments+=("${fuel_icon} ${fuel_color}${fuel_pct}%${C_RESET} ${C_DIM}(${fuel_display})${C_RESET}")
 fi
 
 # ── API 사용량 ──
@@ -280,18 +283,24 @@ if [ -n "$usage_json" ]; then
             fi
         fi
 
-        segments+=("📊 ${usage_parts}")
+        line2_segments+=("📊 ${usage_parts}")
     fi
 fi
 
-# ── 최종 출력: 세그먼트를 구분자로 연결 ──
-out=""
-for seg in "${segments[@]}"; do
-    if [ -n "$out" ]; then
-        out="${out}${SEP}${seg}"
-    else
-        out="$seg"
-    fi
-done
+# ── 최종 출력: 각 줄의 세그먼트를 구분자로 연결 ──
+join_segments() {
+    local out=""
+    for seg in "$@"; do
+        if [ -n "$out" ]; then
+            out="${out}${SEP}${seg}"
+        else
+            out="$seg"
+        fi
+    done
+    echo "$out"
+}
 
-printf "%b\n" "$out"
+printf "%b\n" "$(join_segments "${line1_segments[@]}")"
+if [ "${#line2_segments[@]}" -gt 0 ]; then
+    printf "%b\n" "$(join_segments "${line2_segments[@]}")"
+fi
