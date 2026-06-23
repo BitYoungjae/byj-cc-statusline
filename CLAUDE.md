@@ -59,14 +59,17 @@ Uses `git -c gc.autodetach=false` to prevent git garbage collection during statu
 - Auth: OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
 - Required header: `anthropic-beta: oauth-2025-04-20`
 - Displays: 5-hour session utilization (`five_hour.utilization`) and 7-day weekly utilization (`seven_day.utilization`)
-- Cache: `~/.cache/byj-cc-statusline/usage.json` (180 second TTL)
-- Lock: `~/.cache/byj-cc-statusline/usage.lock` (30 second cooldown, 300 second rate-limit backoff)
-- Stale cache is served when API is unavailable or rate-limited
+- Cache: `~/.cache/byj-cc-statusline/usage.json` (180s TTL; mtime = last successful fetch)
+- Single-flight lock: `~/.cache/byj-cc-statusline/usage.lock.d` (atomic `mkdir`; only one render fetches at a time, reclaimed if older than 60s). Prevents concurrent renders from bursting the endpoint into a `429`.
+- Cooldown/diagnostic state: `~/.cache/byj-cc-statusline/usage.state` (written only after an error). Backoff is exponential with jitter and **capped at 300s** — even a `429` carrying `Retry-After: 3600` is capped, so a transient rate-limit can never freeze the display for hours/days. Reset to zero on the next `200`.
+- Stale cache is always served when a refresh is skipped (lock held / in cooldown) or fails, so the line always shows something.
+- Staleness display: each window is dimmed with a `~` prefix (e.g. `~20%`) once `now` (UTC) passes that window's `resets_at`, via a portable lexicographic string compare (no GNU-only `date -d`).
 
 ### Color Coding
 - Fuel gauge colors: Green (≥70%), Yellow (30-70%), Red (<30%)
 - Usage gauge colors: Green (<50%), Yellow (50-80%), Red (≥80%)
 - Warning icon (⚠️) appears when fuel < 30%
+- Stale usage windows are dimmed (`\033[2m`) with a `~` prefix instead of the normal green/yellow/red
 - All colors use ANSI escape codes (e.g., `\033[32m` for green)
 
 ## Testing
@@ -85,6 +88,15 @@ EOF
 
 # Test the script
 cat /tmp/test-input.json | bash bin/statusline.sh
+```
+
+### Diagnostics
+
+```bash
+# One-command health check for the usage gauge: cache age + window expiry,
+# lock state, cooldown / last error, token presence, and a read-only live API fetch.
+# This is the first thing to run if 5h/7d stops updating.
+bash bin/statusline.sh --doctor
 ```
 
 ## Installation
@@ -111,4 +123,5 @@ cat ~/.claude/settings.json | jq '.statusLine'
 - Settings: `~/.claude/settings.json`
 - Backups: `~/.local/share/byj-cc-statusline/backups/YYYYMMDD_HHMMSS/`
 - Usage cache: `~/.cache/byj-cc-statusline/usage.json`
-- Usage lock: `~/.cache/byj-cc-statusline/usage.lock`
+- Single-flight lock: `~/.cache/byj-cc-statusline/usage.lock.d/` (directory)
+- Cooldown/diagnostic state: `~/.cache/byj-cc-statusline/usage.state`

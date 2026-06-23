@@ -79,8 +79,9 @@ Shows Anthropic API utilization from the Usage API.
 - 🟢 Green (<50%): Low usage
 - 🟡 Yellow (50-80%): Moderate usage
 - 🔴 Red (≥80%): High usage
+- Dimmed `~XX%` (e.g. `~20%`): stale value — that window already reset; shown until the next refresh lands
 
-**Caching:** API responses are cached for 180 seconds with rate-limit backoff support.
+**Caching:** API responses are cached for 180 seconds. Refreshes are single-flight (one fetch at a time) with capped backoff, so a temporary rate-limit never freezes the gauge.
 
 ## 🚀 Installation
 
@@ -178,8 +179,11 @@ The API usage gauge fetches utilization data from the Anthropic Usage API:
 - **Endpoint:** `GET https://api.anthropic.com/api/oauth/usage`
 - **Auth:** OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
 - **Cache:** `~/.cache/byj-cc-statusline/usage.json` (180 second TTL)
-- **Rate limiting:** Respects `Retry-After` headers with 300 second default backoff
-- **Fallback:** Serves stale cache when API is unavailable or rate-limited
+- **Single-flight:** an atomic `mkdir` lock lets only one render fetch at a time, so concurrent renders can't burst the endpoint into a rate-limit
+- **Backoff:** exponential with jitter, **capped at 300s** — even a `429` carrying `Retry-After: 3600` is capped, so a transient rate-limit can't freeze the gauge for hours; it resets on the next success
+- **Staleness:** once a window's `resets_at` passes, that number is shown dimmed with a `~` prefix instead of being mistaken for a live value
+- **Fallback:** serves the last cached value whenever a refresh is skipped or fails, so the line always shows something
+- **Diagnostics:** `bash ~/.claude/statusline.sh --doctor` inspects cache/lock/cooldown/token state and runs a live (read-only) fetch test
 
 ## 📁 Project Structure
 
@@ -205,8 +209,9 @@ byj-cc-statusline/
 
 - Start a conversation first (requires usage data)
 
-**API usage not showing?**
+**API usage not showing or not updating?**
 
+- Run the built-in diagnostic: `bash ~/.claude/statusline.sh --doctor` — shows cache age, window expiry, cooldown / last error, token, and a live fetch test
 - Ensure you're logged in to Claude Code with OAuth
 - Check if `curl` is available: `which curl`
 - Cache is at `~/.cache/byj-cc-statusline/usage.json`
