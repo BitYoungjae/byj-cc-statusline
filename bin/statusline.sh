@@ -30,10 +30,13 @@ readonly USAGE_API_TIMEOUT=4          # curl timeout; single-flight means blocki
 
 # ── Utility functions ──
 
-# Return the age of a file in seconds
+# Return the age (seconds) of a file *or directory*.
+# -e (exists), NOT -f (regular file): this is also called on the lock *directory*.
+# Using -f silently returned 1 for the dir, which disabled stale-lock reclaim
+# and could freeze the usage gauge indefinitely behind a leaked lock.
 get_file_age() {
     local file="$1"
-    [ -f "$file" ] || return 1
+    [ -e "$file" ] || return 1
     local now mtime
     now=$(date +%s)
     if [ -n "$IS_DARWIN" ]; then
@@ -48,20 +51,48 @@ get_file_age() {
 # Prevents concurrent renders from hitting the API at once (which triggers 429).
 # Unlike check-then-write, mkdir is atomic so there is no race.
 
-# Acquire the lock (0 = success). Reclaims a stale lock left by a dead holder.
+# Is a currently-held lock safe to steal? Two independent nets, so a lock
+# leaked by a render that died mid-fetch can NEVER freeze the gauge forever:
+#   • age > USAGE_LOCK_STALE      → reclaim regardless (ultimate backstop; also
+#                                    covers PID reuse and an unreadable pid file)
+#   • holder PID is not alive     → reclaim immediately, no need to wait the cap
+_lock_reclaimable() {
+    local age pid
+    age=$(get_file_age "$USAGE_LOCK_DIR")
+    [ -n "$age" ] && [ "$age" -gt "$USAGE_LOCK_STALE" ] 2>/dev/null && return 0
+    pid=$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)
+    [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && ! kill -0 "$pid" 2>/dev/null && return 0
+    return 1
+}
+
+# Acquire the lock (0 = success). Records our PID so a dead holder is detectable.
+# Fast path is the atomic mkdir. When the lock is held but abandoned, the steal is
+# made atomic by `mv`-ing the orphan aside first: of N renders that simultaneously
+# find it reclaimable, only one's rename succeeds (the source vanishes for the
+# rest), so we can never end up with two holders both fetching at once.
 acquire_lock() {
-    mkdir "$USAGE_LOCK_DIR" 2>/dev/null && return 0
-    local age
-    age=$(get_file_age "$USAGE_LOCK_DIR") || return 1
-    if [ "$age" -gt "$USAGE_LOCK_STALE" ] 2>/dev/null; then
-        rm -rf "$USAGE_LOCK_DIR" 2>/dev/null
-        mkdir "$USAGE_LOCK_DIR" 2>/dev/null && return 0
+    if mkdir "$USAGE_LOCK_DIR" 2>/dev/null; then
+        echo $$ > "$USAGE_LOCK_DIR/pid" 2>/dev/null
+        return 0
+    fi
+    _lock_reclaimable || return 1
+    local steal="$USAGE_LOCK_DIR.steal.$$"
+    if mv "$USAGE_LOCK_DIR" "$steal" 2>/dev/null; then   # atomic rename: exactly one winner
+        rm -rf "$steal" 2>/dev/null
+        if mkdir "$USAGE_LOCK_DIR" 2>/dev/null; then
+            echo $$ > "$USAGE_LOCK_DIR/pid" 2>/dev/null
+            return 0
+        fi
     fi
     return 1
 }
 
+# Release the lock, but only if we still own it (pid matches $$). Idempotent and
+# safe to call twice; a no-op for a render that never acquired or whose lock was
+# already reclaimed by someone else.
 release_lock() {
-    rmdir "$USAGE_LOCK_DIR" 2>/dev/null
+    [ "$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$USAGE_LOCK_DIR" 2>/dev/null
+    return 0
 }
 
 # ── Cooldown / diagnostic state (separate from the lock: "when may we retry") ──
@@ -276,8 +307,15 @@ run_doctor() {
 
     echo "[lock] $USAGE_LOCK_DIR"
     if [ -d "$USAGE_LOCK_DIR" ]; then
+        local lpid lhold
         age=$(get_file_age "$USAGE_LOCK_DIR")
-        echo "  held   : yes, age ${age:-?}s ($([ "${age:-0}" -gt "$USAGE_LOCK_STALE" ] 2>/dev/null && echo 'STALE -> reclaimable' || echo active))"
+        lpid=$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)
+        if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then lhold="holder pid $lpid alive"; else lhold="holder pid ${lpid:-none} gone"; fi
+        if _lock_reclaimable; then
+            echo "  held   : yes, age ${age:-?}s, $lhold -> RECLAIMABLE (next render takes over)"
+        else
+            echo "  held   : yes, age ${age:-?}s, $lhold (active)"
+        fi
     else
         echo "  held   : no"
     fi
@@ -320,6 +358,10 @@ run_doctor() {
         echo "  skipped (no token)"
     fi
 }
+
+# Sourcing with BYJ_STATUSLINE_LIB=1 loads the functions only — no renderer, no
+# touching of real cache/lock files. Used by the lock unit tests (test/test-lock.sh).
+[ -n "${BYJ_STATUSLINE_LIB:-}" ] && return 0 2>/dev/null
 
 # ── Main logic ──
 
