@@ -28,6 +28,9 @@ readonly USAGE_BACKOFF_BASE=30        # exponential backoff base (seconds)
 readonly USAGE_BACKOFF_CAP=300        # cap for every backoff — Retry-After is capped here too (seconds)
 readonly USAGE_API_TIMEOUT=4          # curl timeout; single-flight means blocking at most once per TTL
 
+# ── Session registry (cross-session messaging names) ──
+readonly SESSION_REGISTRY_DIR="$HOME/.claude/sessions"
+
 # ── Utility functions ──
 
 # Return the age (seconds) of a file *or directory*.
@@ -45,6 +48,51 @@ get_file_age() {
         mtime=$(stat -c %Y "$file" 2>/dev/null) || return 1
     fi
     echo $((now - mtime))
+}
+
+# ── Session identity ──
+# The name other sessions address in cross-session messaging is NOT the stdin
+# `session_name` field (that is the conversation title, e.g. "Fix the fuel
+# gauge" — not addressable). The messaging name lives in the session registry:
+# one JSON file per live session, named by pid, keyed internally by sessionId.
+get_session_name() {
+    local sid="$1"
+    [ -n "$sid" ] || return 1
+    [ -d "$SESSION_REGISTRY_DIR" ] || return 1
+
+    # grep first: it narrows to the one matching file without parsing, so a
+    # registry file caught mid-write can't break the lookup for every session.
+    local -a matches=()
+    local f
+    while IFS= read -r f; do
+        matches+=("$f")
+    done < <(grep -l -- "$sid" "$SESSION_REGISTRY_DIR"/*.json 2>/dev/null)
+    [ "${#matches[@]}" -gt 0 ] || return 1
+
+    # Match on sessionId (not the filename): grep only proved the id appears
+    # somewhere in the file. A resumed session can leave the previous pid's
+    # file behind, so the most recently updated entry wins.
+    #
+    # One jq per file rather than one slurped call over all of them: a single
+    # file left truncated by a session killed mid-write makes jq reject its
+    # whole input, which would hide the name for as long as that file sits
+    # there. Read separately, a bad file costs only itself.
+    local best_name="" best_ts=-1 name ts
+    for f in "${matches[@]}"; do
+        IFS=$'\037' read -r name ts <<< "$(jq -r --arg sid "$sid" \
+            'select(.sessionId == $sid)
+             | [(.name // ""), (.updatedAt // 0)] | map(tostring) | join("\u001f")' \
+            "$f" 2>/dev/null)"
+        [ -n "$name" ] || continue
+        case "$ts" in ''|*[!0-9]*) ts=0 ;; esac
+        if [ "$ts" -ge "$best_ts" ]; then
+            best_name="$name"
+            best_ts="$ts"
+        fi
+    done
+
+    [ -n "$best_name" ] || return 1
+    printf '%s' "$best_name"
 }
 
 # ── Single-flight lock (atomic mkdir; portable across macOS/Linux) ──
@@ -379,15 +427,19 @@ fi
 input=$(cat)
 
 # Extract the needed fields from JSON in one pass
-IFS=$'\t' read -r model cwd context_window_size input_tokens cache_creation cache_read <<< \
+# Fields are joined on US (0x1f), not a tab: a tab is IFS *whitespace*, so bash
+# collapses runs of it and one empty field (an absent .session_id) would shift
+# every field after it. A non-whitespace IFS keeps empty fields in position.
+IFS=$'\037' read -r model cwd session_id context_window_size input_tokens cache_creation cache_read <<< \
     "$(echo "$input" | jq -r '[
         .model.display_name,
         .workspace.current_dir,
+        (.session_id // ""),
         (.context_window.context_window_size // 0),
         (.context_window.current_usage.input_tokens // 0),
         (.context_window.current_usage.cache_creation_input_tokens // 0),
         (.context_window.current_usage.cache_read_input_tokens // 0)
-    ] | @tsv')"
+    ] | map(tostring) | join("\u001f")')"
 
 dir=$(basename "$cwd")
 cd "$cwd" 2>/dev/null || cd ~
@@ -398,7 +450,25 @@ cd "$cwd" 2>/dev/null || cd ~
 line1_segments=()
 line2_segments=()
 line1_segments+=("🤖 ${C_CYAN}${model}${C_RESET}")
-line1_segments+=("📁 ${C_BLUE}${dir}${C_RESET}")
+
+# ── Location / session identity ──
+# A derived session name is "<dir>-XX", so printing it next to 📁 would just
+# repeat the directory. Fold it into the 📁 segment instead, and only break it
+# out under 🏷️ once /rename has made the name something 📁 no longer tells you.
+session_name=$(get_session_name "$session_id")
+name_covers_dir=""
+if [ -n "$session_name" ]; then
+    case "$session_name" in
+        "$dir"|"$dir"-*) name_covers_dir=1 ;;
+    esac
+fi
+
+if [ -n "$name_covers_dir" ]; then
+    line1_segments+=("📁 ${C_BLUE}${session_name}${C_RESET}")
+else
+    line1_segments+=("📁 ${C_BLUE}${dir}${C_RESET}")
+    [ -n "$session_name" ] && line1_segments+=("🏷️ ${C_BLUE}${session_name}${C_RESET}")
+fi
 
 # ── Git status ──
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -469,13 +539,13 @@ usage_json=$(get_usage_data 2>/dev/null)
 if [ -n "$usage_json" ]; then
     NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%S)   # for lexicographic compare against resets_at (UTC); portable, avoids date -d
 
-    IFS=$'\t' read -r session_pct session_reset weekly_pct weekly_reset <<< \
+    IFS=$'\037' read -r session_pct session_reset weekly_pct weekly_reset <<< \
         "$(printf '%s' "$usage_json" | jq -r '[
             (.five_hour.utilization  // -1),
             (.five_hour.resets_at    // ""),
             (.seven_day.utilization  // -1),
             (.seven_day.resets_at    // "")
-        ] | @tsv' 2>/dev/null)"
+        ] | map(tostring) | join("\u001f")' 2>/dev/null)"
 
     usage_parts=""
     seg=$(render_usage_window "5h" "$session_pct" "$session_reset") && usage_parts="$seg"

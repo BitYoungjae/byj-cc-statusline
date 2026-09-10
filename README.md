@@ -22,13 +22,28 @@ Shows the current Claude model you're using.
 🤖 Sonnet 4.5
 ```
 
-### 📁 Directory
+### 📁 Directory / Session Name
 
-Current working directory name (not full path, just the folder name).
+Normally the current working directory name (not the full path, just the folder name).
+
+Claude Code can now send messages between sessions, and it addresses a peer session by
+**name**. Since a name it derives is just `<folder>-XX`, showing it next to the folder
+would only repeat it — so the name takes the folder's place:
 
 ```
-📁 my-project
+📁 my-project-a4
 ```
+
+That is the exact string another session uses to message this one. After `/rename`, when
+the name no longer tells you the folder, both are shown:
+
+```
+📁 my-project | 🏷️ fuel-gauge-fix
+```
+
+The name comes from Claude Code's own session registry (`~/.claude/sessions/`), read on
+every render, so it follows a `/rename` with no restart. If there is no entry for the
+session, the folder name is shown alone, exactly as before.
 
 ### 🌿 Git Status
 
@@ -208,6 +223,12 @@ byj-cc-statusline/
 **Fuel gauge shows nothing?**
 
 - Start a conversation first (requires usage data)
+
+**Session name not showing?**
+
+- Only the folder name appears when Claude Code has not registered the session for
+  cross-session messaging — older versions have no `~/.claude/sessions/` registry. This
+  is a silent fallback, not a failure; nothing else on the line is affected.
 
 **API usage not showing or not updating?**
 

@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a custom statusline for Claude Code that displays:
 - Model name
-- Current directory
+- Current directory, or the session's cross-session messaging name when that name covers the directory
 - Git branch and status (clean, modified, staged, untracked)
 - Token usage "fuel gauge" showing remaining context before autocompact
 - API usage gauge showing 5-hour session and 7-day weekly utilization
 
 Example output (two lines):
 ```
-🤖 Sonnet 4.5 | 📁 my-project | 🌿 main ✓
+🤖 Sonnet 4.5 | 📁 my-project-a4 | 🌿 main ✓
 ⛽ 36% (57K) | 📊 5h 20% · 7d 45%
 ```
 
@@ -23,7 +23,8 @@ The project consists of two main components:
 
 1. **bin/statusline.sh** - The core statusline script that:
    - Receives JSON input from Claude Code via stdin
-   - Extracts model name, workspace directory, and transcript path using `jq`
+   - Extracts model name, workspace directory, session id, and transcript path using `jq`
+   - Resolves the session's cross-session messaging name from `~/.claude/sessions/`
    - Checks git status using `git` commands with `gc.autodetach=false` config
    - Parses the transcript JSONL file to calculate token usage
    - Reads `~/.claude/settings.json` to check autocompact settings
@@ -37,6 +38,34 @@ The project consists of two main components:
    - Updates `~/.claude/settings.json` with statusLine configuration
 
 ## Key Technical Details
+
+### Session Identity (cross-session messaging name)
+Claude Code lets sessions message each other, addressing a peer by **name** (the
+name `ListAgents` prints, e.g. `my-project-a4`). Two different names exist, and only
+one of them is addressable:
+
+| Source | Example | Addressable? |
+|---|---|---|
+| stdin `session_name` | `Fix the fuel gauge` | No — this is the conversation title (AI-generated or custom) |
+| `~/.claude/sessions/<pid>.json` → `.name` | `my-project-a4` | Yes — this is what a peer puts in `SendMessage` |
+
+So the displayed name is read from the **session registry**, not from stdin:
+- One JSON file per live session, named by pid, matched on its `.sessionId` field against stdin `.session_id` (the filename is a pid, not a session id).
+- `grep -l` narrows to the matching file before any parsing, then **one `jq` per matched file** — never one slurped call over all of them. A single file left truncated by a session killed mid-write makes `jq` reject its entire input, which would hide the name for as long as that file sits in the directory. Read separately, a bad file costs only itself.
+- A resumed session can leave the previous pid's file behind, so the entry with the highest `updatedAt` wins.
+- `/rename` rewrites `.name`; the registry is read on every render, so the display follows a rename with no restart.
+- Costs ~4ms per render. When no entry is found (registry missing, id absent), the name is simply omitted — the line never breaks.
+
+**Display rule** — a derived name is `<dir>-XX`, so printing it beside 📁 would just repeat the directory:
+- name covers the directory (`$dir` or `$dir-*`) → it replaces the 📁 value: `📁 my-project-a4`
+- name is unrelated (after `/rename`) → 📁 keeps the directory and the name gets its own 🏷️ segment: `📁 my-project | 🏷️ fuel-gauge-fix`
+
+### Field Splitting (a footgun to preserve)
+Multi-field `jq` reads join on **US (`\u001f`) and split with `IFS=$'\037'`** — never `@tsv`.
+A tab is IFS *whitespace*, so bash collapses runs of it: one empty field (an absent
+`.session_id`, a missing `resets_at`) silently shifts every field after it, which
+corrupted the fuel gauge and mixed the 5h/7d values into the wrong slots. A
+non-whitespace separator keeps empty fields in position.
 
 ### Token Usage Calculation
 - Context window size: read from stdin `context_window.context_window_size`
@@ -122,6 +151,7 @@ cat ~/.claude/settings.json | jq '.statusLine'
 - Script: `~/.claude/statusline.sh`
 - Settings: `~/.claude/settings.json`
 - Backups: `~/.local/share/byj-cc-statusline/backups/YYYYMMDD_HHMMSS/`
+- Session registry (read-only, owned by Claude Code): `~/.claude/sessions/<pid>.json`
 - Usage cache: `~/.cache/byj-cc-statusline/usage.json`
 - Single-flight lock: `~/.cache/byj-cc-statusline/usage.lock.d/` (directory)
 - Cooldown/diagnostic state: `~/.cache/byj-cc-statusline/usage.state`
