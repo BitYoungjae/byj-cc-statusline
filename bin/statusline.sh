@@ -16,27 +16,19 @@ readonly SEP=" ${C_BOLD}|${C_RESET} "
 # ── OS detection (single uname call) ──
 readonly IS_DARWIN=$([ "$(uname)" = "Darwin" ] && echo 1)
 
-# ── API usage config ──
-readonly USAGE_API_URL="https://api.anthropic.com/api/oauth/usage"
+# ── Rate limit config ──
+# Claude Code hands us the 5h/7d windows on stdin as .rate_limits, so nothing
+# here touches the network: no OAuth token, no curl, no single-flight lock, no
+# backoff. The cache exists only to bridge the start of a session (see below).
 readonly USAGE_CACHE_DIR="$HOME/.cache/byj-cc-statusline"
-readonly USAGE_CACHE_FILE="$USAGE_CACHE_DIR/usage.json"   # response payload (mtime = last successful fetch)
-readonly USAGE_LOCK_DIR="$USAGE_CACHE_DIR/usage.lock.d"   # atomic single-flight lock (mkdir)
-readonly USAGE_STATE_FILE="$USAGE_CACHE_DIR/usage.state"  # cooldown / failure count / last diagnostics
-readonly USAGE_CACHE_TTL=180          # serve cache without refetch within this window (seconds)
-readonly USAGE_LOCK_STALE=60          # reclaim a lock older than this as a dead holder (seconds)
-readonly USAGE_BACKOFF_BASE=30        # exponential backoff base (seconds)
-readonly USAGE_BACKOFF_CAP=300        # cap for every backoff — Retry-After is capped here too (seconds)
-readonly USAGE_API_TIMEOUT=4          # curl timeout; single-flight means blocking at most once per TTL
+readonly RATE_LIMIT_CACHE="$USAGE_CACHE_DIR/rate-limits.json"
 
 # ── Session registry (cross-session messaging names) ──
 readonly SESSION_REGISTRY_DIR="$HOME/.claude/sessions"
 
 # ── Utility functions ──
 
-# Return the age (seconds) of a file *or directory*.
-# -e (exists), NOT -f (regular file): this is also called on the lock *directory*.
-# Using -f silently returned 1 for the dir, which disabled stale-lock reclaim
-# and could freeze the usage gauge indefinitely behind a leaked lock.
+# Return the age (seconds) of a file *or directory* (-e, not -f).
 get_file_age() {
     local file="$1"
     [ -e "$file" ] || return 1
@@ -95,207 +87,62 @@ get_session_name() {
     printf '%s' "$best_name"
 }
 
-# ── Single-flight lock (atomic mkdir; portable across macOS/Linux) ──
-# Prevents concurrent renders from hitting the API at once (which triggers 429).
-# Unlike check-then-write, mkdir is atomic so there is no race.
+# ── Rate limits (5h / 7d) ──
+# The source of truth is stdin. Claude Code keeps these windows in memory,
+# refreshed from the rate-limit headers of every API response, and passes them
+# through as .rate_limits. That beats polling the usage endpoint outright:
+# fresher (per response, not per 180s), free, and impossible to rate-limit.
+#
+# It has exactly one gap. The state starts empty, so a session that has not made
+# a request yet sends no .rate_limits at all. (Expired windows are dropped by
+# Claude Code as well, so whatever stdin does give us is live by construction —
+# only the cache below can ever be stale.)
+#
+# The cache covers that gap and nothing else: every render persists what stdin
+# gave, and a render with nothing on stdin falls back to it. Those values are
+# then by definition from an earlier session, and render_usage_window dims any
+# whose window has since reset.
 
-# Is a currently-held lock safe to steal? Two independent nets, so a lock
-# leaked by a render that died mid-fetch can NEVER freeze the gauge forever:
-#   • age > USAGE_LOCK_STALE      → reclaim regardless (ultimate backstop; also
-#                                    covers PID reuse and an unreadable pid file)
-#   • holder PID is not alive     → reclaim immediately, no need to wait the cap
-_lock_reclaimable() {
-    local age pid
-    age=$(get_file_age "$USAGE_LOCK_DIR")
-    [ -n "$age" ] && [ "$age" -gt "$USAGE_LOCK_STALE" ] 2>/dev/null && return 0
-    pid=$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)
-    [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && ! kill -0 "$pid" 2>/dev/null && return 0
-    return 1
-}
-
-# Acquire the lock (0 = success). Records our PID so a dead holder is detectable.
-# Fast path is the atomic mkdir. When the lock is held but abandoned, the steal is
-# made atomic by `mv`-ing the orphan aside first: of N renders that simultaneously
-# find it reclaimable, only one's rename succeeds (the source vanishes for the
-# rest), so we can never end up with two holders both fetching at once.
-acquire_lock() {
-    if mkdir "$USAGE_LOCK_DIR" 2>/dev/null; then
-        echo $$ > "$USAGE_LOCK_DIR/pid" 2>/dev/null
-        return 0
+# Persist the stdin windows so the next session has something to start from.
+# Temp + rename, because sessions render concurrently and share this one file:
+# a reader must never catch it half-written.
+persist_rate_limits() {
+    local payload="$1" tmp="$RATE_LIMIT_CACHE.$$"
+    [ -n "$payload" ] || return 0
+    if printf '%s' "$payload" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$RATE_LIMIT_CACHE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     fi
-    _lock_reclaimable || return 1
-    local steal="$USAGE_LOCK_DIR.steal.$$"
-    if mv "$USAGE_LOCK_DIR" "$steal" 2>/dev/null; then   # atomic rename: exactly one winner
-        rm -rf "$steal" 2>/dev/null
-        if mkdir "$USAGE_LOCK_DIR" 2>/dev/null; then
-            echo $$ > "$USAGE_LOCK_DIR/pid" 2>/dev/null
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# Release the lock, but only if we still own it (pid matches $$). Idempotent and
-# safe to call twice; a no-op for a render that never acquired or whose lock was
-# already reclaimed by someone else.
-release_lock() {
-    [ "$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$USAGE_LOCK_DIR" 2>/dev/null
     return 0
 }
 
-# ── Cooldown / diagnostic state (separate from the lock: "when may we retry") ──
-# Set only after an error. Also records the last code/reason for diagnostics.
+# Print the rate-limit windows as JSON, merged per window.
+#
+# Merged, not "stdin or cache": Claude Code drops a window the moment it resets,
+# so a 5h window that expires mid-session vanishes from stdin until the next API
+# response brings the fresh one. Taking stdin wholesale would blank the 5h gauge
+# for that gap. Merging keeps the last known value of every window, which
+# render_usage_window then dims with a '~' — the honest reading, and what the
+# old polling path showed too.
+#
+# Args: <the raw stdin blob>
+get_rate_limits() {
+    local live cached merged
+    live=$(printf '%s' "$1" | jq -c '.rate_limits // empty' 2>/dev/null)
+    cached=$(cat "$RATE_LIMIT_CACHE" 2>/dev/null)
 
-# Returns 0 (blocked) while in cooldown
-in_cooldown() {
-    [ -f "$USAGE_STATE_FILE" ] || return 1
-    local now until
-    now=$(date +%s)
-    until=$(jq -r '.cooldownUntil // 0' "$USAGE_STATE_FILE" 2>/dev/null)
-    [ "$until" -gt "$now" ] 2>/dev/null
-}
-
-# Record state: <http_code> <reason> <cooldown_sec> <failures>
-write_state() {
-    local now; now=$(date +%s)
-    jq -nc \
-        --argjson until "$(( now + $3 ))" --argjson fails "$4" \
-        --arg code "$1" --arg reason "$2" --argjson at "$now" \
-        '{cooldownUntil:$until, failures:$fails, lastCode:$code, reason:$reason, at:$at}' \
-        > "$USAGE_STATE_FILE" 2>/dev/null
-}
-
-# Reset cooldown / failure count on success
-clear_state() {
-    local now; now=$(date +%s)
-    jq -nc --argjson at "$now" \
-        '{cooldownUntil:0, failures:0, lastCode:"200", reason:"ok", at:$at}' \
-        > "$USAGE_STATE_FILE" 2>/dev/null
-}
-
-# Next backoff (seconds): exponential growth + jitter, capped → a freeze can't span days
-backoff_seconds() {
-    local fails="$1"
-    [ "$fails" -lt 1 ] 2>/dev/null && fails=1
-    [ "$fails" -gt 8 ] 2>/dev/null && fails=8       # guard against shift overflow
-    local d=$(( USAGE_BACKOFF_BASE << (fails - 1) ))
-    [ "$d" -gt "$USAGE_BACKOFF_CAP" ] && d=$USAGE_BACKOFF_CAP
-    echo $(( d + RANDOM % (USAGE_BACKOFF_BASE / 2 + 1) ))
-}
-
-# Get the OAuth token (macOS Keychain first, then credentials file)
-get_usage_token() {
-    local token=""
-
-    if [ -n "$IS_DARWIN" ]; then
-        local secret
-        secret=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
-        if [ -n "$secret" ]; then
-            token=$(echo "$secret" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-        fi
-    fi
-
-    if [ -z "$token" ]; then
-        local cred_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
-        if [ -f "$cred_file" ]; then
-            token=$(jq -r '.claudeAiOauth.accessToken // empty' "$cred_file" 2>/dev/null)
-        fi
-    fi
-
-    echo "$token"
-}
-
-# Validate the response (passes if either 5h or 7d has a value)
-validate_usage() {
-    [ -n "$1" ] || return 1
-    local ok
-    ok=$(printf '%s' "$1" | jq -r '[.five_hour.utilization, .seven_day.utilization] | any(. != null)' 2>/dev/null)
-    [ "$ok" = "true" ]
-}
-
-# Extract Retry-After (seconds) from the response headers
-parse_retry_after() {
-    grep -i 'retry-after' "$1" 2>/dev/null | head -1 | tr -d '\r' | awk '{print $2}'
-}
-
-# Perform the HTTP call and update cache/cooldown from the result. Call only while holding the lock.
-# Args: <token>. Returns 0 if the cache was updated.
-_do_fetch() {
-    local token="$1" header_file body http_code retry_after fails cd
-    header_file=$(mktemp)
-    body=$(curl -s --max-time "$USAGE_API_TIMEOUT" \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        -D "$header_file" \
-        -w '\n%{http_code}' \
-        "$USAGE_API_URL" 2>/dev/null)
-
-    # last line = HTTP status code, the rest = response body
-    http_code="${body##*$'\n'}"
-    body="${body%$'\n'*}"
-
-    # Success: write cache + reset cooldown/failures → recover the moment the API is healthy
-    if [ "$http_code" = "200" ] && validate_usage "$body"; then
-        printf '%s' "$body" > "$USAGE_CACHE_FILE"
-        clear_state
-        rm -f "$header_file"
+    if [ -z "$live" ]; then
+        printf '%s' "$cached"
         return 0
     fi
 
-    # Failure: bump the failure count, then set a capped cooldown
-    fails=$(jq -r '.failures // 0' "$USAGE_STATE_FILE" 2>/dev/null)
-    case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
-    fails=$((fails + 1))
+    # `*` is jq's recursive merge, right side winning: stdin's windows overwrite
+    # the cached ones, and a window only the cache still has survives untouched.
+    merged=$(jq -cn --argjson cached "${cached:-null}" --argjson live "$live" \
+        '($cached // {}) * $live' 2>/dev/null)
+    [ -n "$merged" ] || merged="$live"   # unreadable cache: stdin alone still renders
 
-    if [ "$http_code" = "429" ]; then
-        retry_after=$(parse_retry_after "$header_file")
-        if [ -n "$retry_after" ] && [ "$retry_after" -gt 0 ] 2>/dev/null; then
-            cd=$retry_after
-            [ "$cd" -gt "$USAGE_BACKOFF_CAP" ] && cd=$USAGE_BACKOFF_CAP   # prevent a 1-hour Retry-After from freezing us
-        else
-            cd=$(backoff_seconds "$fails")
-        fi
-        write_state "429" "rate-limited(retry=${retry_after:-none};cooldown=${cd})" "$cd" "$fails"
-    else
-        cd=$(backoff_seconds "$fails")
-        write_state "${http_code:-000}" "fetch-failed(http=${http_code:-timeout})" "$cd" "$fails"
-    fi
-    rm -f "$header_file"
-    return 1
-}
-
-# Fetch orchestration: token → cooldown → lock → call → release lock
-fetch_usage() {
-    local token
-    token=$(get_usage_token)
-    [ -z "$token" ] && { write_state "000" "no-token" "$USAGE_BACKOFF_CAP" 0; return 1; }
-
-    in_cooldown && return 1
-    acquire_lock || return 1   # yield immediately if another render is already fetching (show cache instead)
-
-    _do_fetch "$token"
-    local rc=$?
-    release_lock
-    return $rc
-}
-
-# Read usage data (cache first, single-flight fetch when needed).
-# Always prints whatever cache we have — even on a failed refresh, the screen shows something.
-get_usage_data() {
-    local age
-    age=$(get_file_age "$USAGE_CACHE_FILE")
-    if [ -n "$age" ] && [ "$age" -lt "$USAGE_CACHE_TTL" ] 2>/dev/null; then
-        cat "$USAGE_CACHE_FILE"
-        return 0
-    fi
-
-    fetch_usage   # stale/missing → try to refresh (lock & cooldown throttle the call rate)
-
-    if [ -f "$USAGE_CACHE_FILE" ]; then
-        cat "$USAGE_CACHE_FILE"
-        return 0
-    fi
-    return 1
+    persist_rate_limits "$merged"
+    printf '%s' "$merged"
 }
 
 # Return a color based on a percentage (sets the _color variable)
@@ -314,12 +161,14 @@ set_color_by_pct() {
 
 # Render one usage window — if the window already reset (resets_at passed), show stale as dim+'~'.
 # Args: <label> <pct> <resets_at>. Prints the segment and returns 0 if valid, else 1.
-# resets_at is always '...+00:00' (UTC), so a lexicographic compare with NOW_UTC works (no date -d).
+# resets_at is unix epoch seconds, so this is a plain numeric compare — the old
+# ISO-string form needed a lexicographic trick to stay off GNU-only `date -d`.
+# Only cached values reach the stale branch: stdin never carries an expired window.
 render_usage_window() {
     local label="$1" pct="$2" reset="$3" disp
     [ "${pct%.*}" -ge 0 ] 2>/dev/null || return 1
     disp=$(printf "%.0f" "$pct" 2>/dev/null || echo "$pct")
-    if [ -n "$reset" ] && [ "$reset" != "null" ] && [[ "$NOW_UTC" > "${reset:0:19}" ]]; then
+    if [ -n "$reset" ] && [ "${reset%.*}" -le "$NOW_EPOCH" ] 2>/dev/null; then
         printf '%s%s ~%s%%%s' "$C_DIM" "$label" "$disp" "$C_RESET"
     else
         set_color_by_pct "$pct" 50 80
@@ -328,94 +177,77 @@ render_usage_window() {
 }
 
 # ── Diagnostics (DX): `statusline.sh --doctor` ──
-# Dumps cache/lock/cooldown/token state at once and tests a live fetch.
-# A one-command tool to diagnose why usage stops updating.
+# There is far less to go wrong now that nothing is fetched: this reports where
+# the numbers come from and what the fallback cache holds. It cannot show the
+# live values — those ride in on stdin, which a bare --doctor run has none of.
 run_doctor() {
-    local now now_utc age r5 r7 token
-    now=$(date +%s); now_utc=$(date -u +%Y-%m-%dT%H:%M:%S)
+    local now age r5 r7 legacy found
+    now=$(date +%s)
     echo "byj-cc-statusline doctor"
     echo "platform : $(uname)  bash ${BASH_VERSION}"
-    echo "now      : $now  ($now_utc UTC)"
+    echo "now      : $now  ($(date -u +%Y-%m-%dT%H:%M:%S) UTC)"
     echo
 
-    echo "[cache] $USAGE_CACHE_FILE"
-    if age=$(get_file_age "$USAGE_CACHE_FILE"); then
-        echo "  age    : ${age}s (TTL ${USAGE_CACHE_TTL}s) -> $([ "$age" -lt "$USAGE_CACHE_TTL" ] 2>/dev/null && echo fresh || echo STALE)"
-        jq -r '"  5h     : \(.five_hour.utilization)%  resets \(.five_hour.resets_at)",
-               "  7d     : \(.seven_day.utilization)%  resets \(.seven_day.resets_at)"' \
-            "$USAGE_CACHE_FILE" 2>/dev/null
-        r5=$(jq -r '.five_hour.resets_at  // ""' "$USAGE_CACHE_FILE" 2>/dev/null)
-        r7=$(jq -r '.seven_day.resets_at // ""' "$USAGE_CACHE_FILE" 2>/dev/null)
-        [ -n "$r5" ] && echo "  5h win : $([[ "$now_utc" > "${r5:0:19}" ]] && echo 'EXPIRED (shown dim ~)' || echo valid)"
-        [ -n "$r7" ] && echo "  7d win : $([[ "$now_utc" > "${r7:0:19}" ]] && echo 'EXPIRED (shown dim ~)' || echo valid)"
+    echo "[source] Claude Code stdin, .rate_limits  — no network, no token, no lock"
+    echo "  Live 5h/7d values ride in on the rate-limit headers of this session's own"
+    echo "  API responses. A session that has not sent a message yet carries none, and"
+    echo "  Claude Code drops a window once it resets; both fall back to the cache"
+    echo "  below, which renders dimmed with a '~' once its window has passed."
+    echo
+
+    echo "[cache] $RATE_LIMIT_CACHE"
+    if age=$(get_file_age "$RATE_LIMIT_CACHE"); then
+        echo "  written : ${age}s ago"
+        jq -r 'def pct: if type == "number" then (round | tostring) else "-" end;
+               "  5h      : \(.five_hour.used_percentage  | pct)%  resets \(.five_hour.resets_at  // "-")",
+               "  7d      : \(.seven_day.used_percentage | pct)%  resets \(.seven_day.resets_at // "-")"' \
+            "$RATE_LIMIT_CACHE" 2>/dev/null || echo "  (unreadable — it will be rewritten by the next render that has stdin windows)"
+        r5=$(jq -r '.five_hour.resets_at  // ""' "$RATE_LIMIT_CACHE" 2>/dev/null)
+        r7=$(jq -r '.seven_day.resets_at // ""' "$RATE_LIMIT_CACHE" 2>/dev/null)
+        report_window "5h" "$r5" "$now"
+        report_window "7d" "$r7" "$now"
     else
-        echo "  (no cache file yet)"
+        echo "  (none yet — normal until a session renders while it has rate limits)"
     fi
     echo
 
-    echo "[lock] $USAGE_LOCK_DIR"
-    if [ -d "$USAGE_LOCK_DIR" ]; then
-        local lpid lhold
-        age=$(get_file_age "$USAGE_LOCK_DIR")
-        lpid=$(cat "$USAGE_LOCK_DIR/pid" 2>/dev/null)
-        if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then lhold="holder pid $lpid alive"; else lhold="holder pid ${lpid:-none} gone"; fi
-        if _lock_reclaimable; then
-            echo "  held   : yes, age ${age:-?}s, $lhold -> RECLAIMABLE (next render takes over)"
-        else
-            echo "  held   : yes, age ${age:-?}s, $lhold (active)"
+    echo "[legacy] artifacts of the old OAuth-polling path"
+    found=""
+    for legacy in usage.json usage.state usage.lock usage.lock.d; do
+        if [ -e "$USAGE_CACHE_DIR/$legacy" ]; then
+            echo "  present : $legacy  (removed on the next render)"
+            found=1
         fi
-    else
-        echo "  held   : no"
-    fi
-    echo
+    done
+    [ -z "$found" ] && echo "  none — cleaned up"
+}
 
-    echo "[state] $USAGE_STATE_FILE"
-    if [ -f "$USAGE_STATE_FILE" ]; then
-        local until
-        until=$(jq -r '.cooldownUntil // 0' "$USAGE_STATE_FILE" 2>/dev/null)
-        jq -r '"  lastCode: \(.lastCode)   failures: \(.failures)   reason: \(.reason)"' "$USAGE_STATE_FILE" 2>/dev/null
-        if [ "$until" -gt "$now" ] 2>/dev/null; then
-            echo "  cooldown: ACTIVE for $((until - now))s more"
-        else
-            echo "  cooldown: none"
-        fi
+# Doctor helper: is a cached window still in the future?
+report_window() {
+    local label="$1" reset="$2" now="$3"
+    [ -n "$reset" ] || return 0
+    if [ "${reset%.*}" -le "$now" ] 2>/dev/null; then
+        echo "  $label win  : EXPIRED $(( now - ${reset%.*} ))s ago (shown dim ~)"
     else
-        echo "  (no state file yet)"
-    fi
-    echo
-
-    echo "[token]"
-    token=$(get_usage_token)
-    if [ -n "$token" ]; then echo "  present : yes (len ${#token})"
-    else echo "  present : NO -> usage cannot be fetched"; fi
-    echo
-
-    echo "[live fetch test] $USAGE_API_URL  (read-only; does not touch cache/lock/cooldown)"
-    if [ -n "$token" ]; then
-        local t0 t1 hc body
-        t0=$(date +%s)
-        body=$(curl -s --max-time "$USAGE_API_TIMEOUT" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -w '\n%{http_code}' "$USAGE_API_URL" 2>/dev/null)
-        t1=$(date +%s)
-        hc="${body##*$'\n'}"; body="${body%$'\n'*}"
-        echo "  http    : ${hc:-no-response}  ($((t1 - t0))s)"
-        echo "  parsed  : $(printf '%s' "$body" | jq -rc '{five_h:.five_hour.utilization, seven_d:.seven_day.utilization}' 2>/dev/null)"
-    else
-        echo "  skipped (no token)"
+        echo "  $label win  : valid for $(( ${reset%.*} - now ))s more"
     fi
 }
 
 # Sourcing with BYJ_STATUSLINE_LIB=1 loads the functions only — no renderer, no
-# touching of real cache/lock files. Used by the lock unit tests (test/test-lock.sh).
+# writes to the cache. Lets a test script exercise the helpers in isolation.
 [ -n "${BYJ_STATUSLINE_LIB:-}" ] && return 0 2>/dev/null
 
 # ── Main logic ──
 
 # Pre-create the cache dir (avoid repeated mkdir calls)
 mkdir -p "$USAGE_CACHE_DIR"
-rm -f "$USAGE_CACHE_DIR/usage.lock" 2>/dev/null   # legacy: clean up the old single lock file
+
+# Legacy cleanup: the old OAuth-polling path left a response cache, a cooldown
+# file and a lock directory behind. Guarded by a test so the steady state, where
+# none of them exist, forks nothing.
+for legacy in usage.json usage.state usage.lock usage.lock.d; do
+    [ -e "$USAGE_CACHE_DIR/$legacy" ] && rm -rf "$USAGE_CACHE_DIR/$legacy"
+done
 
 # Diagnostic mode: `statusline.sh --doctor` (no stdin needed)
 if [ "${1:-}" = "--doctor" ]; then
@@ -535,16 +367,16 @@ if [ "$current_usage" -gt 0 ] 2>/dev/null; then
 fi
 
 # ── API usage ──
-usage_json=$(get_usage_data 2>/dev/null)
+usage_json=$(get_rate_limits "$input")
 if [ -n "$usage_json" ]; then
-    NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%S)   # for lexicographic compare against resets_at (UTC); portable, avoids date -d
+    NOW_EPOCH=$(date +%s)
 
     IFS=$'\037' read -r session_pct session_reset weekly_pct weekly_reset <<< \
         "$(printf '%s' "$usage_json" | jq -r '[
-            (.five_hour.utilization  // -1),
-            (.five_hour.resets_at    // ""),
-            (.seven_day.utilization  // -1),
-            (.seven_day.resets_at    // "")
+            (.five_hour.used_percentage  // -1),
+            (.five_hour.resets_at        // ""),
+            (.seven_day.used_percentage  // -1),
+            (.seven_day.resets_at        // "")
         ] | map(tostring) | join("\u001f")' 2>/dev/null)"
 
     usage_parts=""

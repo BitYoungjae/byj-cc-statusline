@@ -28,7 +28,7 @@ The project consists of two main components:
    - Checks git status using `git` commands with `gc.autodetach=false` config
    - Parses the transcript JSONL file to calculate token usage
    - Reads `~/.claude/settings.json` to check autocompact settings
-   - Queries Anthropic Usage API for 5-hour/7-day utilization (with caching)
+   - Reads 5h/7d rate limits from stdin `.rate_limits` (cached only to bridge session start)
    - Outputs formatted status with ANSI color codes
 
 2. **install-statusline.sh** - Installation script that:
@@ -83,16 +83,52 @@ Uses `git -c gc.autodetach=false` to prevent git garbage collection during statu
 - Yellow dot (🟡): Untracked files (`git ls-files --others --exclude-standard`)
 - Green checkmark (✓): Clean working tree
 
-### API Usage (Anthropic Usage API)
-- Endpoint: `GET https://api.anthropic.com/api/oauth/usage`
-- Auth: OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
-- Required header: `anthropic-beta: oauth-2025-04-20`
-- Displays: 5-hour session utilization (`five_hour.utilization`) and 7-day weekly utilization (`seven_day.utilization`)
-- Cache: `~/.cache/byj-cc-statusline/usage.json` (180s TTL; mtime = last successful fetch)
-- Single-flight lock: `~/.cache/byj-cc-statusline/usage.lock.d` (atomic `mkdir`; only one render fetches at a time). Prevents concurrent renders from bursting the endpoint into a `429`. The holder records its PID in `usage.lock.d/pid`, so a lock leaked by a render that died mid-fetch is reclaimed by the next render via **two independent nets**: the holder PID being gone (`kill -0`) reclaims instantly, and age > 60s (`USAGE_LOCK_STALE`) reclaims regardless (backstop covering PID reuse / an unreadable pid file). A leaked lock can therefore never freeze the gauge. The orphan steal is made atomic with a rename (`mv` aside) so that, of N renders that simultaneously find a lock reclaimable, only one wins. Release only removes the lock if the caller still owns it (pid matches).
-- Cooldown/diagnostic state: `~/.cache/byj-cc-statusline/usage.state` (written only after an error). Backoff is exponential with jitter and **capped at 300s** — even a `429` carrying `Retry-After: 3600` is capped, so a transient rate-limit can never freeze the display for hours/days. Reset to zero on the next `200`.
-- Stale cache is always served when a refresh is skipped (lock held / in cooldown) or fails, so the line always shows something.
-- Staleness display: each window is dimmed with a `~` prefix (e.g. `~20%`) once `now` (UTC) passes that window's `resets_at`, via a portable lexicographic string compare (no GNU-only `date -d`).
+### API Usage (5h / 7d rate limits)
+Read from **stdin**, not fetched. Claude Code keeps the windows in memory, refreshed
+from the rate-limit headers of every API response, and passes them through as
+`.rate_limits`:
+
+```json
+"rate_limits": {
+  "five_hour": { "used_percentage": 7.0, "resets_at": 1789038600 },
+  "seven_day": { "used_percentage": 29.0, "resets_at": 1789444800 }
+}
+```
+
+`used_percentage` is 0–100 and `resets_at` is **unix epoch seconds** (the old OAuth
+endpoint returned an ISO string, which is why the staleness compare used to be
+lexicographic).
+
+This replaced a poll of `GET /api/oauth/usage` and deleted the OAuth token lookup,
+`curl` call, 180s TTL, atomic-`mkdir` single-flight lock and capped exponential
+backoff along with it — a 204-line block plus its config and diagnostics, replaced by
+about 45 lines. The whole class of bug that froze the gauge twice (commits 530388d,
+8a839b6) went with it: there is now no network call in the statusline at all, so
+there is nothing to rate-limit, lock, or back off from. The script is 406 lines,
+down from 504, while also gaining the session-name lookup.
+
+**Two properties of the stdin data drive the rest of the design:**
+1. *It starts empty.* The state is in-memory and populated from response headers, so
+   a session that has not made a request yet sends no `rate_limits` at all.
+2. *Expired windows are dropped.* Claude Code filters to `resets_at > now`, so any
+   window stdin does carry is live by construction — only cached values go stale.
+
+**Cache** (`~/.cache/byj-cc-statusline/rate-limits.json`) exists solely to cover those
+two gaps:
+- Every render persists what it rendered, so the next session starts with something.
+- Windows are **merged per window**, not overwritten. A 5h window that resets mid-session
+  disappears from stdin until the next API response; taking stdin wholesale would blank
+  the 5h gauge for that gap, so the cached value survives and renders dimmed instead.
+- Written temp-then-`mv` (atomic rename). Sessions render concurrently and share this
+  one file, so a reader must never catch it half-written.
+- No TTL, no lock, no cooldown — a write is unconditional and cannot fail in a way that
+  blocks a render.
+- Staleness display: a window is dimmed with a `~` prefix (e.g. `~20%`) once `resets_at`
+  has passed — a plain numeric compare against `date +%s`.
+
+**Version requirement:** `.rate_limits` on stdin (verified on Claude Code 2.1.267). On a
+build too old to send it, the gauge shows the cached values dimmed, or nothing at all on
+a fresh install.
 
 ### Color Coding
 - Fuel gauge colors: Green (≥70%), Yellow (30-70%), Red (<30%)
@@ -122,9 +158,9 @@ cat /tmp/test-input.json | bash bin/statusline.sh
 ### Diagnostics
 
 ```bash
-# One-command health check for the usage gauge: cache age + window expiry,
-# lock state, cooldown / last error, token presence, and a read-only live API fetch.
-# This is the first thing to run if 5h/7d stops updating.
+# Health check for the usage gauge: where the numbers come from, the fallback
+# cache (values + window expiry), and any leftover OAuth-era artifacts. It cannot
+# show live values — those ride in on stdin, which a bare --doctor run has none of.
 bash bin/statusline.sh --doctor
 ```
 
@@ -142,7 +178,6 @@ cat ~/.claude/settings.json | jq '.statusLine'
 ## Dependencies
 
 - **jq** - Required for JSON parsing
-- **curl** - Required for API usage fetching
 - **git** - Optional, for git status display
 - **bash** - Shell interpreter
 
@@ -152,6 +187,7 @@ cat ~/.claude/settings.json | jq '.statusLine'
 - Settings: `~/.claude/settings.json`
 - Backups: `~/.local/share/byj-cc-statusline/backups/YYYYMMDD_HHMMSS/`
 - Session registry (read-only, owned by Claude Code): `~/.claude/sessions/<pid>.json`
-- Usage cache: `~/.cache/byj-cc-statusline/usage.json`
-- Single-flight lock: `~/.cache/byj-cc-statusline/usage.lock.d/` (directory)
-- Cooldown/diagnostic state: `~/.cache/byj-cc-statusline/usage.state`
+- Rate-limit cache: `~/.cache/byj-cc-statusline/rate-limits.json`
+
+Removed with the OAuth-polling path (the script deletes these on sight): `usage.json`,
+`usage.state`, `usage.lock`, `usage.lock.d/`.

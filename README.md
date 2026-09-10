@@ -8,7 +8,7 @@
 
 A curated statusline for Claude Code (CC) - showing only the essentials. Displays context usage like a car's fuel gauge and API utilization at a glance.
 
-**Lightweight:** Single bash script, no external dependencies except `jq` and `curl`.
+**Lightweight:** Single bash script, `jq` its only dependency — and no network calls at all.
 
 ![Statusline Preview](capture.png)
 
@@ -96,7 +96,7 @@ Shows Anthropic API utilization from the Usage API.
 - 🔴 Red (≥80%): High usage
 - Dimmed `~XX%` (e.g. `~20%`): stale value — that window already reset; shown until the next refresh lands
 
-**Caching:** API responses are cached for 180 seconds. Refreshes are single-flight (one fetch at a time) with capped backoff, so a temporary rate-limit never freezes the gauge.
+**Where the numbers come from:** Claude Code hands these to the statusline directly, refreshed from the rate-limit headers of every API response. Nothing is fetched, so there is no token, no request, and nothing that can be rate-limited or time out.
 
 ## 🚀 Installation
 
@@ -145,9 +145,8 @@ chmod +x ~/.claude/statusline.sh
 
 ## 📋 Requirements
 
-- **Claude Code** v2.0+
+- **Claude Code** v2.0+ — the 5h/7d gauge additionally needs a build that sends `rate_limits` on stdin (verified on 2.1.267)
 - **jq** - JSON parser
-- **curl** - For API usage fetching
 
 Install dependencies:
 
@@ -189,16 +188,35 @@ The percentage shows how much safe space you have left before hitting the buffer
 
 ## ⚙️ How the API Usage Gauge Works
 
-The API usage gauge fetches utilization data from the Anthropic Usage API:
+Claude Code tracks your 5h and 7d rate limits from the headers on every API response
+and passes them to the statusline on stdin. The statusline just reads them:
 
-- **Endpoint:** `GET https://api.anthropic.com/api/oauth/usage`
-- **Auth:** OAuth token from macOS Keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json`
-- **Cache:** `~/.cache/byj-cc-statusline/usage.json` (180 second TTL)
-- **Single-flight:** an atomic `mkdir` lock lets only one render fetch at a time, so concurrent renders can't burst the endpoint into a rate-limit
-- **Backoff:** exponential with jitter, **capped at 300s** — even a `429` carrying `Retry-After: 3600` is capped, so a transient rate-limit can't freeze the gauge for hours; it resets on the next success
-- **Staleness:** once a window's `resets_at` passes, that number is shown dimmed with a `~` prefix instead of being mistaken for a live value
-- **Fallback:** serves the last cached value whenever a refresh is skipped or fails, so the line always shows something
-- **Diagnostics:** `bash ~/.claude/statusline.sh --doctor` inspects cache/lock/cooldown/token state and runs a live (read-only) fetch test
+```json
+"rate_limits": {
+  "five_hour": { "used_percentage": 7.0, "resets_at": 1789038600 },
+  "seven_day": { "used_percentage": 29.0, "resets_at": 1789444800 }
+}
+```
+
+That makes the gauge **fresher than polling** (it moves with every response rather than
+on a 180-second timer) and completely free — no OAuth token, no HTTP request, nothing
+that can be rate-limited, time out, or need a lock.
+
+Two details are worth knowing:
+
+- **A brand-new session has no numbers yet.** The data is built up from responses, so
+  before you send your first message there is nothing to show.
+- **A window disappears the moment it resets**, until the next response brings the fresh
+  one.
+
+A small cache at `~/.cache/byj-cc-statusline/rate-limits.json` covers both gaps. Every
+render saves what it displayed, merged per window, so a new session opens with the last
+known values and a just-reset window keeps showing its previous reading. Anything served
+from the cache past its reset time is dimmed with a `~` (e.g. `~20%`) so it is never
+mistaken for a live number.
+
+> Earlier versions polled `GET /api/oauth/usage` with an OAuth token, a 180s cache, a
+> single-flight lock and capped exponential backoff. Reading stdin replaced all of it.
 
 ## 📁 Project Structure
 
@@ -230,12 +248,16 @@ byj-cc-statusline/
   cross-session messaging — older versions have no `~/.claude/sessions/` registry. This
   is a silent fallback, not a failure; nothing else on the line is affected.
 
-**API usage not showing or not updating?**
+**API usage not showing?**
 
-- Run the built-in diagnostic: `bash ~/.claude/statusline.sh --doctor` — shows cache age, window expiry, cooldown / last error, token, and a live fetch test
-- Ensure you're logged in to Claude Code with OAuth
-- Check if `curl` is available: `which curl`
-- Cache is at `~/.cache/byj-cc-statusline/usage.json`
+- Send a message first — a session has no rate-limit data until its first API response
+- Run the built-in diagnostic: `bash ~/.claude/statusline.sh --doctor` — shows the fallback cache, window expiry, and any leftover files from the old polling path
+- If it never appears, your Claude Code may be too old to send `rate_limits` on stdin
+- Cache is at `~/.cache/byj-cc-statusline/rate-limits.json`
+
+**Showing a dimmed `~20%`?**
+
+- That is a cached value whose window has already reset — it refreshes on the next response
 
 ## 🔄 Updates
 
