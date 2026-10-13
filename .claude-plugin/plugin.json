@@ -1,6 +1,6 @@
 {
   "name": "byj-statusline",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A calm status band above the prompt: model and effort, session name, git, a live context fuel gauge, and 5h/7d usage with pace marks. Hover any part for details; click a name to copy it.",
   "author": {
     "name": "BitYoungjae",

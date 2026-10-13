@@ -31,6 +31,7 @@ import {
   placeName,
   registryFiles,
 } from '../hooks/lib/session-name'
+import { effortSetting } from '../hooks/lib/settings'
 
 describe('fuel gauge', () => {
   test('is the share of the safe limit still free', () => {
@@ -187,6 +188,28 @@ describe('text', () => {
     ])
     expect(track(0.25, 8, 0.75).map(run => run.text).join('')).toBe('━━────│─')
     expect(track(0.25, 8).map(run => run.text).join('')).toBe('━━──────')
+  })
+})
+
+describe('the effort in the settings', () => {
+  test('is kept per model', () => {
+    const saved = {
+      modelSettings: {
+        'claude-opus-5-5': { effortLevel: 'xhigh' },
+        'claude-sonnet-5-5': { effortLevel: 'medium' },
+      },
+    }
+
+    expect(effortSetting(saved, 'claude-opus-5-5')).toBe('xhigh')
+    expect(effortSetting(saved, 'claude-sonnet-5-5')).toBe('medium')
+    // A context suffix on the id still finds the model's entry.
+    expect(effortSetting(saved, 'claude-opus-5-5[1m]')).toBe('xhigh')
+  })
+
+  test('falls back on the older top-level key, else none', () => {
+    expect(effortSetting({ effortLevel: 'high' }, 'claude-opus-5-5')).toBe('high')
+    expect(effortSetting({ modelSettings: {} }, 'claude-haiku-5-5')).toBeNull()
+    expect(effortSetting(null, 'claude-opus-5-5')).toBeNull()
   })
 })
 
@@ -941,7 +964,7 @@ describe('the band', () => {
     on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
     on('session.cwd', () => ({ value: '/w/proj' }))
     on('session.id', () => ({ value: 'sid-1' }))
-    on('settings.read', () => ({ value: { effortLevel: 'high' } }))
+    on('settings.read', () => ({ value: { modelSettings: { 'claude-sonnet-5-5': { effortLevel: 'high' } } } }))
     on('env.get', () => ({ value: '/home/me' }))
     on('fs.list', () => ({
       value: [{ name: '1.json', kind: 'file', size: 1, mtimeMs: 1, isLink: false }],

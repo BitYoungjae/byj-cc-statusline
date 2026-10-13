@@ -28,6 +28,7 @@ import { WINDOW_SPAN_MS } from './lib/cards'
 import { baseName, countdown, fuel, pace } from './lib/format'
 import { GIT_STATUS_ARGV, parseGitStatus } from './lib/git'
 import { parseEntry, pickName, registryFiles } from './lib/session-name'
+import { effortSetting } from './lib/settings'
 import { separatorPart, type Settings } from './lib/style'
 import { view } from './lib/view'
 
@@ -85,7 +86,7 @@ let history: number[] = []
 // carried (`turn.step`); until there is one, and when the person changes it
 // between requests, it is what the settings say.
 let effort: string | null = null
-let effortSetting: string | null | undefined
+let savedEffort: string | null | undefined
 let lastIdentity: Identity | null = null
 
 let timer: Timer | null = null
@@ -176,22 +177,15 @@ async function publishIdentity($: EngineInterface, next: Identity) {
 }
 
 /**
- * The effort in `settings.json`. A change since the last read is the person
- * switching it (`/effort`, `/model`), so it takes over at once instead of
- * waiting for the next request to confirm it.
+ * The effort the settings hold for the model. A change since the last read is
+ * the person switching it (`/effort`, `/model`), so it takes over at once
+ * instead of waiting for the next request to confirm it.
  */
-async function readEffortSetting($: EngineInterface) {
-  try {
-    const { effortLevel } = await $.settings.read()
-    const value = typeof effortLevel === 'string' ? effortLevel : null
+function noteEffortSetting(value: string | null) {
+  if (value === savedEffort) return
 
-    if (value === effortSetting) return
-
-    effortSetting = value
-    effort = value
-  } catch {
-    // Keeps what it knew.
-  }
+  savedEffort = value
+  effort = value
 }
 
 /** What a request of the main thread carried: the level it truly ran at, or none for a model without effort. */
@@ -210,13 +204,16 @@ async function noteEffort($: EngineInterface, level: string | number | undefined
 
 async function refreshIdentity($: EngineInterface) {
   try {
-    const [model, cwd, sessionId] = await Promise.all([
+    const [model, cwd, sessionId, saved] = await Promise.all([
       $.session.model(),
       $.session.cwd(),
       $.session.id(),
-      readEffortSetting($),
+      $.settings.read().catch(() => null),
     ])
     const sessionName = await findSessionName($, sessionId)
+
+    // Unreadable settings keep what was known.
+    if (saved !== null) noteEffortSetting(effortSetting(saved, model))
 
     await publishIdentity($, { model, effort, dir: baseName(cwd), cwd, sessionName })
   } catch {

@@ -15,7 +15,8 @@ The repository root is the plugin and its own marketplace (`.claude-plugin/`).
   - `cards.ts` the hover cards
   - `arrange.ts` fitting the segments to a width: one line or two, trim, shed
   - `view.ts` the element tree; takes the element constructors and press closures as arguments
-  - `git.ts`, `session-name.ts` parsing
+  - `git.ts`, `session-name.ts`, `settings.ts` parsing (effort is per model under
+    `modelSettings`, with the old top-level `effortLevel` as the fallback)
 - `types/index.d.ts`: the `$.state` contract.
 
 ## Rules worth keeping
