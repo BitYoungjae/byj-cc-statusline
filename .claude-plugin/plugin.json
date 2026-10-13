@@ -1,7 +1,7 @@
 {
   "name": "byj-statusline",
-  "version": "0.2.1",
-  "description": "A calm status band above the prompt: model and effort, session name, git, a live context fuel gauge, and 5h/7d usage with pace marks. Hover any part for details; click a name to copy it.",
+  "version": "1.0.0",
+  "description": "A status band above the prompt that looks like it shipped with Claude Code: model and effort, session, git, a live context gauge, 5h/7d usage with pace marks, the prompt cache countdown, and a live line of tools, subagents and tasks while Claude works. Hover any part for details; click a name to copy it.",
   "author": {
     "name": "BitYoungjae",
     "url": "https://github.com/BitYoungjae"
@@ -14,6 +14,8 @@
     "context",
     "usage",
     "rate-limit",
+    "prompt-cache",
+    "subagents",
     "git",
     "mod"
   ],
@@ -43,6 +45,18 @@
       "type": "boolean",
       "title": "Detail cards on hover",
       "description": "Rest the pointer on a part of the band for a card with what lies behind it: the context's mix and growth, a window's pace and reset, the git counts spelled out.",
+      "default": true
+    },
+    "activity": {
+      "type": "boolean",
+      "title": "Activity line",
+      "description": "While Claude works, a line under the band with the tool running, the turn's tool tally, subagents with their clocks, and task progress. Between turns it stays only for a subagent still running or a task still under way.",
+      "default": true
+    },
+    "cache": {
+      "type": "boolean",
+      "title": "Prompt cache countdown",
+      "description": "Between turns, how long until the prompt cache lapses and the next message pays to write the whole context again. The TTL (5 minutes or an hour) is read from the responses.",
       "default": true
     },
     "showCost": {

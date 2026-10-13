@@ -1,5 +1,6 @@
-// Pure helpers: the fuel arithmetic, gauge bars, countdowns, text width.
-// Nothing here touches `$`, so each is tested on its own.
+// Pure helpers: the fuel arithmetic, countdowns and clocks, text width.
+// Nothing here touches `$`, so each is tested on its own; the surface
+// modules in `../live/` import from here too.
 
 /** Tokens held back for auto-compaction: the fixed buffer, ON or OFF. */
 export const BUFFER_AUTO_COMPACT = 33_000
@@ -155,50 +156,14 @@ export function dollars(usd: number): string {
   return usd < 10 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(1)}`
 }
 
-/** A gauge track of `cells` characters: `filled` heavy, the rest light. */
-export function bar(
-  fraction: number,
-  cells: number,
-): { filled: string; rest: string } {
-  const clamped = Math.min(1, Math.max(0, fraction))
-  const count = Math.round(clamped * cells)
-
-  return { filled: '━'.repeat(count), rest: '─'.repeat(cells - count) }
+/** `text` with spaces before it up to `cells`, so a figure keeps its column as it changes. */
+export function pad(text: string, cells: number): string {
+  return `${' '.repeat(Math.max(0, cells - width(text)))}${text}`
 }
 
-export type Run = { text: string; kind: 'fill' | 'rest' | 'mark' }
-
-/**
- * A gauge track with a mark on it: where an even pace would have the fill by
- * now. The mark takes one cell, a tick across the track: heavy inside the
- * fill, light beyond it.
- */
-export function track(fraction: number, cells: number, markAt?: number): Run[] {
-  const { filled, rest } = bar(fraction, cells)
-  const kinds: Run['kind'][] = [
-    ...Array.from({ length: filled.length }, () => 'fill' as const),
-    ...Array.from({ length: rest.length }, () => 'rest' as const),
-  ]
-  const glyphs = [...filled, ...rest]
-
-  if (markAt !== undefined && cells > 0) {
-    const cell = Math.min(cells - 1, Math.max(0, Math.floor(markAt * cells)))
-
-    glyphs[cell] = kinds[cell] === 'fill' ? '┃' : '│'
-    kinds[cell] = 'mark'
-  }
-
-  const runs: Run[] = []
-
-  for (const [index, kind] of kinds.entries()) {
-    const last = runs[runs.length - 1]
-    const glyph = glyphs[index] ?? ''
-
-    if (last !== undefined && last.kind === kind) last.text += glyph
-    else runs.push({ text: glyph, kind })
-  }
-
-  return runs
+/** `text` with spaces after it up to `cells`: a figure that stays beside what it belongs to, and still holds its room. */
+export function padEnd(text: string, cells: number): string {
+  return `${text}${' '.repeat(Math.max(0, cells - width(text)))}`
 }
 
 /** Time until a reset, as short as it reads: 2h13m, 45m, 3d4h. */
@@ -212,6 +177,37 @@ export function countdown(ms: number): string {
   if (hours < 24) return `${hours}h${String(minutes % 60).padStart(2, '0')}m`
 
   return `${Math.floor(hours / 24)}d${hours % 24}h`
+}
+
+/** Time gone, as a running clock reads: 0:07, 12:05, then 1h02m. */
+export function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(seconds / 60)
+
+  if (minutes < 60) return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
+
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`
+}
+
+/**
+ * Time left on a cache entry: whole minutes while there are ten or more of
+ * them (52m), then minutes and seconds (9:42, 0:45). Null once it has run out.
+ */
+export function timeLeft(ms: number): string | null {
+  if (ms <= 0) return null
+
+  const seconds = Math.ceil(ms / 1000)
+
+  if (seconds >= 600) return `${Math.floor(seconds / 60)}m`
+
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/** How long ago, in the fewest words: just now, 4m ago, 2h ago. */
+export function ago(ms: number): string {
+  if (ms < 60_000) return 'just now'
+
+  return `${countdown(ms)} ago`
 }
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
