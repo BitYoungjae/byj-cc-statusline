@@ -1,31 +1,4 @@
-# macOS
+# Written by Claude Code when it loads the mod: API types for the editor and tsc
+.claude-plugin/types/
+node_modules/
 .DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Thumbnails
-Thumbs.db
-
-# Backup files
-*.bak
-*.backup
-*~
-
-# Test files
-test/
-*.test.sh
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Logs
-*.log
-
-# Temporary files
-tmp/
-temp/

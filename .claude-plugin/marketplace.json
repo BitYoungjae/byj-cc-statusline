@@ -1,0 +1,17 @@
+{
+  "name": "byj-cc-statusline",
+  "owner": {
+    "name": "BitYoungjae",
+    "url": "https://github.com/BitYoungjae"
+  },
+  "metadata": {
+    "description": "A calm status band above the Claude Code prompt."
+  },
+  "plugins": [
+    {
+      "name": "byj-statusline",
+      "source": "./",
+      "description": "Model and effort, session name, git, a live context gauge and 5h/7d usage with pace marks, above the prompt."
+    }
+  ]
+}

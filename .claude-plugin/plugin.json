@@ -1,0 +1,61 @@
+{
+  "name": "byj-statusline",
+  "version": "0.2.0",
+  "description": "A calm status band above the prompt: model and effort, session name, git, a live context fuel gauge, and 5h/7d usage with pace marks. Hover any part for details; click a name to copy it.",
+  "author": {
+    "name": "BitYoungjae",
+    "url": "https://github.com/BitYoungjae"
+  },
+  "homepage": "https://github.com/BitYoungjae/byj-cc-statusline",
+  "repository": "https://github.com/BitYoungjae/byj-cc-statusline",
+  "license": "MIT",
+  "keywords": [
+    "statusline",
+    "context",
+    "usage",
+    "rate-limit",
+    "git",
+    "mod"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "layout": {
+      "type": "string",
+      "title": "Layout",
+      "description": "auto: one line when everything fits, two lines otherwise. two-line: always two lines (context, then metrics).",
+      "options": [
+        "auto",
+        "two-line"
+      ],
+      "default": "auto"
+    },
+    "icons": {
+      "type": "string",
+      "title": "Icons",
+      "description": "symbols: a quiet palette, an effort meter, pace marks and single-width glyphs that line up in any terminal. emoji: the original statusline's emoji and traffic-light colours.",
+      "options": [
+        "symbols",
+        "emoji"
+      ],
+      "default": "symbols"
+    },
+    "details": {
+      "type": "boolean",
+      "title": "Detail cards on hover",
+      "description": "Rest the pointer on a part of the band for a card with what lies behind it: the context's mix and growth, a window's pace and reset, the git counts spelled out.",
+      "default": true
+    },
+    "showCost": {
+      "type": "boolean",
+      "title": "Show session cost",
+      "description": "Add the session's running cost in US dollars to the metrics.",
+      "default": false
+    },
+    "alerts": {
+      "type": "boolean",
+      "title": "Alert toasts",
+      "description": "Raise one toast when the fuel gauge drops below 30%, a usage window passes 90%, or one past half is on pace to run out before it resets.",
+      "default": true
+    }
+  }
+}
