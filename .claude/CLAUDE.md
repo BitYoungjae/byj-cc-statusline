@@ -19,6 +19,8 @@ The repository root is the plugin and its own marketplace (`.claude-plugin/`).
     context mix, the sparkline
   - `activity.ts` the turn, its tools, subagents and tasks, as pure reducers
   - `cache.ts` the prompt cache: TTL from the transcript or learnt, hit ratio, time left
+  - `windows.ts` the rate-limit windows: what the engine reports on a response, what an
+    earlier session remembered, and when a remembered one is dropped
   - `style.ts` the `Part`/`Seg`/`Card`/`Live` types, the two looks (glyphs), the palette
   - `segments.ts` what each part of the band says, per level of detail
   - `cards.ts` the hover cards
@@ -43,7 +45,11 @@ The repository root is the plugin and its own marketplace (`.claude-plugin/`).
   auto-compact off). Good from 70%, warn from 30%, bad below.
 - Usage windows: good under 50%, warn under 80%, bad above. A reading past its
   `resetsAt` is a remembered one: dim, `~` prefix, no countdown. Windows merge per
-  window and persist in `$.store` under `rate-limits`.
+  window and persist in `$.store` under `rate-limits`. A remembered window more than
+  its own length (`WINDOW_SPAN_MS`) past its reset is dropped, not bridged: since the
+  2026-10-30 plan update a verified Ultra account has no 5h session window at all, so
+  a window missing from the reports can be gone for good — a bridge that never ends
+  is litter.
 - The symbols look only uses glyphs every coding font has (box drawing, block elements,
   Latin-1, plus `↑ ↓ ✓ … − ■`). No `↻ ⎇ ⧉ ⚠ ▸ ●`; they fall back to other fonts at other
   widths. `tests/layout.test.ts` checks every character the band and its cards draw.

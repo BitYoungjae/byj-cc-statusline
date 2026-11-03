@@ -34,11 +34,7 @@ import {
 } from './format'
 import { gauge, mixGauge, sparkline } from './gauge'
 import { faint, fillColor, GLYPHS, levelColor, plural, quiet, type Card, type Palette, type Part } from './style'
-
-export const WINDOW_SPAN_MS = {
-  five_hour: 5 * 3_600_000,
-  seven_day: 7 * 86_400_000,
-}
+import { WINDOW_SPAN_MS } from './windows'
 
 /** The widest a mix gauge draws inside a card. */
 const MIX_CELLS = 44

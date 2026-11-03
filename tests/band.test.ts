@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 
+import { WINDOW_SPAN_MS } from '../hooks/lib/windows'
 import { NOW } from './fixtures'
 
 const NAME = 'byj-statusline'
@@ -346,6 +347,53 @@ describe('the prompt cache', () => {
 
     expect(shown).not.toContain('cache ')
     expect(shown).not.toContain(' Explore')
+
+    await ui.unmount()
+  })
+})
+
+describe('the usage windows', () => {
+  // A plan that reports both windows, the 5h one about to reset: the engine
+  // drops a window the moment it does, and never reports it again.
+  function bothWindows(on: On) {
+    on('session.usage', () => ({
+      value: {
+        context: { tokens: 110_000, window: 200_000 },
+        rateLimits: [
+          { kind: 'five_hour', percentUsed: 80, resetsAt: new Date(NOW + 30_000).toISOString() },
+          { kind: 'seven_day', percentUsed: 36, resetsAt: new Date(NOW + 3 * 86_400_000).toISOString() },
+        ],
+        cost: { usd: 0.42 },
+      },
+    }))
+  }
+
+  test('a window that just reset bridges dimmed, then fades out once it cannot be the current one', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    engineBand(on)
+    bothWindows(on)
+
+    await wake($, on, clock)
+
+    const ui = await $.ui.mount({ plugin: NAME, surface: 'terminal', component: 'AbovePrompt', props })
+    const shown = await texts(ui)
+
+    expect(shown).toContain('5h ')
+    expect(shown.join('')).toContain('80%')
+
+    // A minute past its reset: still the last reading, dimmed, waiting for the next report.
+    await clock.advance(60_000)
+    expect((await texts(ui)).join('')).toContain('~80%')
+
+    // One window-length past that reset it is history — or a window the plan
+    // no longer has (a verified Ultra account has no 5h session limit): gone,
+    // while the window the plan does have stays.
+    await clock.advance(WINDOW_SPAN_MS.five_hour)
+    const later = await texts(ui)
+
+    expect(later.join('')).not.toContain('5h')
+    expect(later).toContain('7d ')
+    expect(later.join('')).toContain('36%')
 
     await ui.unmount()
   })

@@ -18,7 +18,6 @@ import {
   tagCard,
   tallyCard,
   tasksCard,
-  WINDOW_SPAN_MS,
   windowCard,
 } from './cards'
 import {
@@ -56,6 +55,7 @@ import {
   type Seg,
   type Settings,
 } from './style'
+import { WINDOW_SPAN_MS } from './windows'
 
 type Look = { glyphs: Glyphs; palette: Palette }
 

@@ -28,7 +28,7 @@ import type {
   TurnUsage,
 } from 'claude-code'
 
-import type { Activity, CacheState, ContextPart, GitInfo, Identity, TurnReceipt, Usage, WindowReading } from '../types'
+import type { Activity, CacheState, ContextPart, GitInfo, Identity, TurnReceipt, Usage } from '../types'
 import type { ClockProps } from './live/clock'
 import {
   agentStatusOf,
@@ -61,13 +61,13 @@ import {
   TTL_5M,
   ttlOfTranscript,
 } from './lib/cache'
-import { WINDOW_SPAN_MS } from './lib/cards'
 import { baseName, countdown, fuel, pace } from './lib/format'
 import { GIT_STATUS_ARGV, parseGitStatus } from './lib/git'
 import { parseEntry, pickName, registryFiles } from './lib/session-name'
 import { effortSetting } from './lib/settings'
 import { paletteOf, separatorPart, type Live, type Settings } from './lib/style'
 import { view } from './lib/view'
+import { mergeWindows, toWindows, WINDOW_SPAN_MS } from './lib/windows'
 
 const TICK_MS = 30_000
 /** Tool calls come in bursts; git is asked at most this often for them. */
@@ -120,8 +120,12 @@ let settings: Options = {
 let hasAlerts = true
 
 // The last reading of each window. Merged per window, never replaced: Claude
-// Code drops a window the moment it resets, and the gauge should keep showing
-// the last value, dimmed, until the next response brings the new one.
+// Code drops a window the moment it resets, and the gauge keeps showing the
+// last value, dimmed, until the next response brings the new one — or, one
+// window-length past that reset, drops it (`lib/windows`): a window the plan
+// no longer has (a verified Ultra account has had no 5h session window since
+// the 2026-10-30 plan update) never comes back, and a bridge that never ends
+// is litter.
 let windows: Usage['windows'] = { five_hour: null, seven_day: null }
 let isAutoCompact = true
 
@@ -179,32 +183,6 @@ function settingsOf(options: PluginOptions): Options {
     hasActivity: options.activity !== false,
     hasCache: options.cache !== false,
     hasCards: options.details !== false,
-  }
-}
-
-function toReading(raw: unknown): WindowReading | null {
-  if (typeof raw !== 'object' || raw === null) return null
-
-  const { percentUsed, resetsAt } = raw as Record<string, unknown>
-
-  if (typeof percentUsed !== 'number') return null
-
-  return {
-    percentUsed,
-    resetsAt: typeof resetsAt === 'string' ? resetsAt : null,
-  }
-}
-
-/** What `$.store` kept from an earlier session, or nothing when it is not the shape written. */
-function toWindows(raw: unknown): Usage['windows'] {
-  const stored = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<
-    string,
-    unknown
-  >
-
-  return {
-    five_hour: toReading(stored.five_hour),
-    seven_day: toReading(stored.seven_day),
   }
 }
 
@@ -704,16 +682,8 @@ async function applyUsage(
     // The windows the last session remembered must be loaded before this one merges into them.
     await ensureStarted($)
 
-    const next = { ...windows }
-
-    for (const limit of rateLimits) {
-      if (limit.kind !== 'five_hour' && limit.kind !== 'seven_day') continue
-
-      next[limit.kind] = {
-        percentUsed: limit.percentUsed,
-        resetsAt: limit.resetsAt ?? null,
-      }
-    }
+    const now = await $.clock.now()
+    const next = mergeWindows(windows, rateLimits, now)
 
     if (JSON.stringify(next) !== JSON.stringify(windows)) {
       windows = next
@@ -821,7 +791,20 @@ async function noteResume($: EngineInterface, since: number | undefined, tokens:
 
 async function tick($: EngineInterface) {
   try {
-    await sync('now', await $.clock.now(), value => update($, clock, () => value))
+    const now = await $.clock.now()
+
+    await sync('now', now, value => update($, clock, () => value))
+
+    // A remembered window past its own length is not coming back — a plan
+    // without it never reports it again — so the band sheds it between
+    // responses too, not only on one.
+    const next = mergeWindows(windows, [], now)
+
+    if (JSON.stringify(next) !== JSON.stringify(windows)) {
+      windows = next
+      $.store.set(STORE_KEY, next).catch(() => {})
+      await publishUsage($)
+    }
   } catch {
     // The countdowns move on the next tick.
   }
@@ -884,7 +867,9 @@ async function begin($: EngineInterface) {
     resume($).catch(() => {}),
   ])
 
-  windows = toWindows(stored)
+  // What the last session remembered, minus what can only be history: a
+  // window reset by more than its own length is not coming back.
+  windows = mergeWindows(toWindows(stored), [], await $.clock.now())
 
   const knownTtl = toTtl(ttl)
 
