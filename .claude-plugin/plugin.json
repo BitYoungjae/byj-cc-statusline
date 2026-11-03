@@ -1,6 +1,6 @@
 {
   "name": "byj-statusline",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A status band above the prompt that looks like it shipped with Claude Code: model and effort, session, git, a live context gauge, 5h/7d usage with pace marks, the prompt cache countdown, and a live line of tools, subagents and tasks while Claude works. Hover any part for details; click a name to copy it.",
   "author": {
     "name": "BitYoungjae",
